@@ -20,6 +20,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+#include <sys/stat.h>
 #include <dirent.h>
 
 #define W 256
@@ -79,8 +81,10 @@ static void dream_step(float *im, float strength) {
                 float sum = 0; int n = 0;
                 for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
                     int xx = x + dx, yy = y + dy;
-                    if (xx < 0) xx = 0; if (xx >= W) xx = W - 1;
-                    if (yy < 0) yy = 0; if (yy >= H) yy = H - 1;
+                    if (xx < 0) xx = 0;
+                    if (xx >= W) xx = W - 1;
+                    if (yy < 0) yy = 0;
+                    if (yy >= H) yy = H - 1;
                     sum += im[(yy * W + xx) * 3 + c]; n++;
                 }
                 float blur = sum / n;
@@ -109,8 +113,10 @@ static void zoom_frame(float *im, float zf, int n) {
     }
     int cw = (int)(W * zf), ch = (int)(H * zf);
     int x0 = (W - cw) / 2 + (int)ox, y0 = (H - ch) / 2 + (int)oy;
-    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
-    if (x0 + cw > W) x0 = W - cw; if (y0 + ch > H) y0 = H - ch;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x0 + cw > W) x0 = W - cw;
+    if (y0 + ch > H) y0 = H - ch;
     for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
         int sx = x0 + x * cw / W, sy = y0 + y * ch / H;
         for (int c = 0; c < 3; c++) tmp[(y * W + x) * 3 + c] = im[(sy * W + sx) * 3 + c];
@@ -127,8 +133,10 @@ static void octave_pass(float *im, float strength) {
         float sum = 0; int n = 0;
         for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
             int xx = x + dx, yy = y + dy;
-            if (xx < 0) xx = 0; if (xx >= 128) xx = 127;
-            if (yy < 0) yy = 0; if (yy >= 96) yy = 95;
+            if (xx < 0) xx = 0;
+            if (xx >= 128) xx = 127;
+            if (yy < 0) yy = 0;
+            if (yy >= 96) yy = 95;
             sum += half[(yy * 128 + xx) * 3 + c]; n++;
         }
         float blur = sum / n, v = half[(y * 128 + x) * 3 + c];
@@ -203,40 +211,40 @@ static void show_top(void) {
 }
 static void draw_ui(void) {
     consoleSelect(&conSub); consoleClear();
-    iprintf("\x1b[2J");
-    iprintf("DreamCamera DSi v1\n");
-    iprintf("------------------\n");
+    printf("\x1b[2J");
+    printf("DreamCamera DSi v1\n");
+    printf("------------------\n");
     if (state == ST_VIEW) {
-        iprintf("%s\n", camOk ? (camSel ? "Camera: OUTER" : "Camera: INNER") : "NO CAMERA: TEST PATTERN");
-        iprintf("SD: %s\n", sdOk ? "ok" : "no card");
-        iprintf("\n");
-        iprintf("A / SHOOT: take photo\n");
-        iprintf("X: switch camera\n");
-        iprintf("Y: gallery (%d dreams)\n", galCount);
-        iprintf("Up/Down: setting\n");
-        iprintf("Left/Right: change\n");
-        iprintf("\n");
-        iprintf("> Dream %s\n", STR_NAMES[dreamStr]);
-        iprintf("> Zoom %.3f\n", zoomF);
-        iprintf("> Path %s\n", PATH_NAMES[pathSel]);
-        iprintf("> Frames %d  Octaves %d\n", framesWanted, octaves);
+        printf("%s\n", camOk ? (camSel ? "Camera: OUTER" : "Camera: INNER") : "NO CAMERA: TEST PATTERN");
+        printf("SD: %s\n", sdOk ? "ok" : "no card");
+        printf("\n");
+        printf("A / SHOOT: take photo\n");
+        printf("X: switch camera\n");
+        printf("Y: gallery (%d dreams)\n", galCount);
+        printf("Up/Down: setting\n");
+        printf("Left/Right: change\n");
+        printf("\n");
+        printf("> Dream %s\n", STR_NAMES[dreamStr]);
+        printf("> Zoom %.3f\n", zoomF);
+        printf("> Path %s\n", PATH_NAMES[pathSel]);
+        printf("> Frames %d  Octaves %d\n", framesWanted, octaves);
     } else if (state == ST_DREAM) {
-        iprintf("Dreaming... %d / %d\n", frameCount, framesWanted);
-        iprintf("frame %d total\n", frameCount);
-        iprintf("\nB: stop\n");
+        printf("Dreaming... %d / %d\n", frameCount, framesWanted);
+        printf("frame %d total\n", frameCount);
+        printf("\nB: stop\n");
     } else if (state == ST_DONE) {
-        iprintf("Done: %d frames.\n", frameCount);
-        iprintf("Saved to SD:\n/dreamcamera/dc%04d/\n", dreamNo);
-        iprintf("\nA: Continue +50\n");
-        iprintf("B: back to camera\n");
-        iprintf("Y: gallery\n");
+        printf("Done: %d frames.\n", frameCount);
+        printf("Saved to SD:\n/dreamcamera/dc%04d/\n", dreamNo);
+        printf("\nA: Continue +50\n");
+        printf("B: back to camera\n");
+        printf("Y: gallery\n");
     } else if (state == ST_GALLERY) {
-        iprintf("Gallery %d / %d\n", galCount ? galIdx + 1 : 0, galCount);
+        printf("Gallery %d / %d\n", galCount ? galIdx + 1 : 0, galCount);
         if (galCount) {
-            iprintf("%s  (%d frames)\n", galNames[galIdx], gallery_frames(galNames[galIdx]));
-            iprintf("\nA: play  L/R: browse\n");
-        } else iprintf("No saved dreams yet.\n");
-        iprintf("B: back\n");
+            printf("%s  (%d frames)\n", galNames[galIdx], gallery_frames(galNames[galIdx]));
+            printf("\nA: play  L/R: browse\n");
+        } else printf("No saved dreams yet.\n");
+        printf("B: back\n");
     }
 }
 
