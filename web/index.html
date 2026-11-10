@@ -59,11 +59,11 @@
 </style>
 </head>
 <body>
-<header><h1>📷 DreamCamera</h1><span>deepdream camera · v1.4</span></header>
+<header><h1>📷 DreamCamera</h1><span>deepdream camera · v1.5</span></header>
 <main>
   <!-- TOP SQUARE: viewfinder. Plain: nothing drawn over the picture. Tap = shutter. -->
   <div class="square" id="viewBox" title="Tap to shoot">
-    <video id="vid" autoplay muted playsinline></video>
+    <video id="vid" autoplay muted playsinline disablepictureinpicture></video>
     <canvas id="artCv"></canvas>
     <div class="hint" id="viewHint"></div>
   </div>
@@ -139,7 +139,6 @@
   </section>
   </div>
 </main>
-<footer>DreamCamera v1.4 · camera only, no game · models load on demand, nothing leaves your device except model downloads · <a href="README.md">README</a></footer>
 <script src="tfjs/tf.min.js"></script>
 <script src="tfjs/tf-backend-wasm.min.js"></script>
 <script src="tfjs/tf-backend-webgpu.min.js"></script>
