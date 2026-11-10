@@ -25,11 +25,14 @@ Open `web/index.html` on any HTTPS host (camera needs HTTPS or localhost), or se
 | Inception v3 | Real | Live: DeepdreamlingsFusion site |
 | VGG16 | Real | Live: DeepdreamlingsFusion site |
 | MobileNetV2 | Real | Google Cloud Storage (tfjs-models) |
+| MobileNetV1 (0.25) | Real | Google Cloud Storage (tfjs-models) |
 | VGG19, ResNet50, EfficientNetB0, InceptionResNetV2, DenseNet121 | Coming soon | Not verified — TFHub now redirects to Kaggle, GCS paths 404 |
 
-Models load on demand from the live site by default. For offline use: `web/tools/download_models.sh` fetches all five into `web/models/`, then set Model source → Local.
+Models load on demand from the live site by default. For offline use: `web/tools/download_models.sh` fetches all six into `web/models/`, then set Model source → Local.
 
-Verified 2026-11-09: Inception v1 and MobileNetV2 loaded in TF.js 4.22.0 and produced real gradients (v1 mixed4c at 96×96, MobileNetV2 expanded_conv_13 at 224×224 — it needs exactly 224×224 input, the app clamps octaves for it). v2/v3/VGG16: model.json + weight shards reachable, same exports already shipping in the Dreamlings Fusion app.
+Verified 2026-11-09: Inception v1 and MobileNetV2 loaded in TF.js 4.22.0 and produced real gradients (v1 mixed4c at 96×96, MobileNetV2 expanded_conv_13 at 224×224 — it needs exactly 224×224 input, the app clamps octaves for it). v2/VGG16: model.json + weight shards reachable, same exports already shipping in the Dreamlings Fusion app.
+
+Verified 2026-11-10 (v1.2, staged, not yet pushed): MobileNetV1 0.25_224 loads in TF.js 4.22.0, 1.9 MB, real gradients on conv_pw_11/12 at 224×224 (fixed 224 input, like MobileNetV2). Same check found Inception v3 was silently dreaming nothing: its 70 BatchNorm layers have no gamma, and the patch that adds one left it at 0, so every BatchNorm output was just its beta — v3 is fixed in this build by setting the patched gamma to 1 (verified: all six mixed outputs now vary with the input, mixed6 gradient real).
 
 ## DSi
 
