@@ -8,8 +8,9 @@ WebView wrapper of the web app (`web/`). Package `com.dreamcamera.app`.
 bash android/build_apk.sh
 ```
 
-Makes `dreamcamera-v1.apk` in the repo root (staging dir). Needs
-`web/models/` downloaded first for offline models:
+Makes `dreamcamera-v<VERSION>.apk` in the repo root (staging dir) — the
+version sits next to the name, before `.apk`, so the file installs as an APK.
+Needs `web/models/` downloaded first for offline models:
 `bash web/tools/download_models.sh`.
 
 ## What it does
@@ -18,7 +19,7 @@ Makes `dreamcamera-v1.apk` in the repo root (staging dir). Needs
   page can fetch the bundled `models/` folder.
 - Asks for the Camera permission at runtime and grants the page's
   `getUserMedia` video request.
-- Models: all five real models bundled (~93 MB), so it dreams fully offline.
+- Models: all six real models bundled (~94 MB), so it dreams fully offline.
   Set Model source to Live site in the app to use online models instead.
 - Nothing is uploaded anywhere. No game, no dreamlings.
 
