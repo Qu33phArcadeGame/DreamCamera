@@ -21,6 +21,10 @@ Needs `web/models/` downloaded first for offline models:
   `getUserMedia` video request.
 - Models: all six real models bundled (~94 MB), so it dreams fully offline.
   Set Model source to Live site in the app to use online models instead.
+- Home screen widgets: DreamCamera 2x2 (latest dream, tap to open) and
+  DreamCamera Shoot 3x3 (latest dream + Shoot & Dream button). The page
+  hands each finished dream to the app through the DreamCameraBridge, which
+  saves it as latest_dream.jpg for the widgets to show.
 - Nothing is uploaded anywhere. No game, no dreamlings.
 
 ## Keystore
