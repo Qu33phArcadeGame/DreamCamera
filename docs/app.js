@@ -1,4 +1,4 @@
-// DreamCamera v1.5 — deepdream camera. Web app.
+// DreamCamera v1.6 — deepdream camera. Web app.
 // Dream engine ported from the Dreamlings generator (generator.html):
 // same MODELS registry shape, PRE pixel math, gradient-ascent dreamStep,
 // zoomCrop + path offsets, octave start-dream, engine fallback.
@@ -20,9 +20,10 @@ try { tf.env().set("WEBGL_FORCE_F16_TEXTURES", true); } catch (e) {}
 // TF.js layers model, GCS (verified 2026-11-10: loads, real gradients on
 // conv_pw_11/12; fixed 224 input like mobilenetv2). New in v1.5 (verified
 // 2026-11-10, real gradients in TF.js 4.22.0 CPU): VGG19, ResNet50,
-// EfficientNetB0 — all three bundled in the APK. Still coming soon (NOT
-// shipped — no hosted TF.js copy exists anywhere; Keras conversion in
-// progress): InceptionResNetV2, DenseNet121.
+// EfficientNetB0 — all three bundled in the APK. New in v1.6 (converted
+// from Keras weights 2026-11-10, real gradients verified): DenseNet121,
+// InceptionResNetV2 (graph model — its layers version cannot load, the
+// residual blocks use a custom layer TF.js rejects). All 11 models real.
 const LIVE_BASE = "https://qu33pharcadegame.github.io/DeepdreamlingsFusion/models/";
 const MODELS = {
   v1: { short: "v1", label: "Inception v1", kind: "graph", live: LIVE_BASE + "inceptionv1/model.json", local: "models/inceptionv1/model.json", pre: "v1",
@@ -52,8 +53,14 @@ const MODELS = {
   efficientnetb0: { short: "efficientnetb0", label: "EfficientNet B0", kind: "graph", live: "https://raw.githubusercontent.com/ntedgi/efficientnet-tensorflowjs-binaries/main/models/B0/model.json", local: "models/efficientnetb0/model.json", pre: "eff", trustLayers: true,
     layers: ["StatefulPartitionedCall/model/stack_2/block_1/add/add", "StatefulPartitionedCall/model/stack_4/block_2/add/add", "StatefulPartitionedCall/model/stack_6/block_0/project_bn/FusedBatchNormV3", "StatefulPartitionedCall/model/top_activation/mul"],
     pref: ["StatefulPartitionedCall/model/stack_4/block_2/add/add", "StatefulPartitionedCall/model/stack_6/block_0/project_bn/FusedBatchNormV3"], note: "Efficient and sharp. The lightest of the new three." },
+  densenet121: { short: "densenet121", label: "DenseNet121", kind: "layers", live: "https://raw.githubusercontent.com/Qu33phArcadeGame/DreamCamera/main/web/models/densenet121/model.json", local: "models/densenet121/model.json", pre: "torch", fixedSize: 224,
+    layers: ["conv3_block12_concat", "conv4_block24_concat", "conv5_block16_concat"],
+    pref: ["conv4_block24_concat", "conv5_block16_concat"], note: "Dense connections. Sharp, detailed dreams. Converted from Keras." },
+  inceptionresnetv2: { short: "inceptionresnetv2", label: "InceptionResNetV2", kind: "graph", live: "https://raw.githubusercontent.com/Qu33phArcadeGame/DreamCamera/main/web/models/inceptionresnetv2/model.json", local: "models/inceptionresnetv2/model.json", pre: "v2", trustLayers: true, fixedSize: 299,
+    layers: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_18_ac/Relu"],
+    pref: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu"], note: "Inception + residual. The biggest model. Fixed 299 input. Converted from Keras." },
 };
-const COMING_SOON = ["InceptionResNetV2", "DenseNet121"];
+const COMING_SOON = [];
 // Per-model pixel math (same as the Dreamlings generator).
 const PRE = {
   v1: { norm: t => t.sub(117), denorm: t => t.add(117).div(255), lo: -117, hi: 138, noise: [-10, 10] },
@@ -63,6 +70,9 @@ const PRE = {
          denorm: t => t.add(tf.tensor1d([103.939, 116.779, 123.68])).reverse(-1).div(255),
          lo: -103.939, hi: 151.061, noise: [-10, 10] },
   eff: { norm: t => t.div(255), denorm: t => t, lo: 0, hi: 1, noise: [-0.05, 0.05] },   // EfficientNet: scale to [0,1]
+  torch: { norm: t => t.div(255).sub(tf.tensor1d([0.485, 0.456, 0.406])).div(tf.tensor1d([0.229, 0.224, 0.225])),
+           denorm: t => t.mul(tf.tensor1d([0.229, 0.224, 0.225])).add(tf.tensor1d([0.485, 0.456, 0.406])),
+           lo: -2.118, hi: 2.64, noise: [-0.05, 0.05] },   // DenseNet: x/255, then (x-mean)/std per channel (RGB)
 };
 const WASM_PATH = "tfjs/";
 const QUALITY = { turbo: { w: 192, h: 192 }, fast: { w: 256, h: 256 }, normal: { w: 384, h: 384 }, high: { w: 512, h: 512 } };
@@ -95,6 +105,10 @@ const PRESETS = [
   { m: "resnet50", name: "Deep residual", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["activation_39", "activation_21"] } },
   { m: "efficientnetb0", name: "Efficient swirl", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["StatefulPartitionedCall/model/stack_4/block_2/add/add"] } },
   { m: "efficientnetb0", name: "B0 bloom", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["StatefulPartitionedCall/model/stack_4/block_2/add/add", "StatefulPartitionedCall/model/stack_6/block_0/project_bn/FusedBatchNormV3"] } },
+  { m: "densenet121", name: "Dense bloom", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["conv4_block24_concat"] } },
+  { m: "densenet121", name: "Dense garden", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["conv5_block16_concat", "conv4_block24_concat"] } },
+  { m: "inceptionresnetv2", name: "Residual storm", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu"] } },
+  { m: "inceptionresnetv2", name: "IRv2 spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu"] } },
 ];
 const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 16, facing: "environment", modelSrc: "live" };
 
