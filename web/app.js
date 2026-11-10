@@ -1,4 +1,4 @@
-// DreamCamera v1.4 — deepdream camera. Web app.
+// DreamCamera v1.5 — deepdream camera. Web app.
 // Dream engine ported from the Dreamlings generator (generator.html):
 // same MODELS registry shape, PRE pixel math, gradient-ascent dreamStep,
 // zoomCrop + path offsets, octave start-dream, engine fallback.
@@ -18,9 +18,11 @@ try { tf.env().set("WEBGL_FORCE_F16_TEXTURES", true); } catch (e) {}
 // savedmodel on Google Cloud Storage (verified: model.json 200, shard1
 // HEAD 200, 4 shards, 125 weights, 299 nodes). mobilenetv1 0.25_224:
 // TF.js layers model, GCS (verified 2026-11-10: loads, real gradients on
-// conv_pw_11/12; fixed 224 input like mobilenetv2). Coming soon (NOT shipped as
-// real — TFHub now redirects to Kaggle / GCS paths 404, weights unverified):
-// VGG19, ResNet50, EfficientNetB0, InceptionResNetV2, DenseNet121.
+// conv_pw_11/12; fixed 224 input like mobilenetv2). New in v1.5 (verified
+// 2026-11-10, real gradients in TF.js 4.22.0 CPU): VGG19, ResNet50,
+// EfficientNetB0 — all three bundled in the APK. Still coming soon (NOT
+// shipped — no hosted TF.js copy exists anywhere; Keras conversion in
+// progress): InceptionResNetV2, DenseNet121.
 const LIVE_BASE = "https://qu33pharcadegame.github.io/DeepdreamlingsFusion/models/";
 const MODELS = {
   v1: { short: "v1", label: "Inception v1", kind: "graph", live: LIVE_BASE + "inceptionv1/model.json", local: "models/inceptionv1/model.json", pre: "v1",
@@ -41,8 +43,17 @@ const MODELS = {
   mobilenetv1: { short: "mobilenetv1", label: "MobileNetV1", kind: "layers", live: "https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.25_224/model.json", local: "models/mobilenetv1/model.json", pre: "v2", minSize: 224, fixedSize: 224,
     layers: ["conv_pw_9_relu", "conv_pw_10_relu", "conv_pw_11_relu", "conv_pw_12_relu", "conv_pw_13_relu"],
     pref: ["conv_pw_11_relu", "conv_pw_12_relu"], note: "Smallest + fastest. Good first model on a slow phone." },
+  vgg19: { short: "vgg19", label: "VGG19", kind: "layers", live: "https://raw.githubusercontent.com/paulsp94/tfjs_vgg19_imagenet/master/model/model.json", local: "models/vgg19/model.json", pre: "vgg",
+    layers: ["block3_conv4", "block4_conv4", "block5_conv4"],
+    pref: ["block5_conv4", "block4_conv4"], note: "VGG16's deeper sibling. Painterly swirls, slower." },
+  resnet50: { short: "resnet50", label: "ResNet50", kind: "layers", live: "https://raw.githubusercontent.com/paulsp94/tfjs_resnet_imagenet/master/ResNet50/model.json", local: "models/resnet50/model.json", pre: "vgg", fixedSize: 224,
+    layers: ["activation_21", "activation_39"],
+    pref: ["activation_39", "activation_21"], note: "Residual blocks. TF-slim layer names. Fixed 224 input. One of the heaviest models." },
+  efficientnetb0: { short: "efficientnetb0", label: "EfficientNet B0", kind: "graph", live: "https://raw.githubusercontent.com/ntedgi/efficientnet-tensorflowjs-binaries/main/models/B0/model.json", local: "models/efficientnetb0/model.json", pre: "eff", trustLayers: true,
+    layers: ["StatefulPartitionedCall/model/stack_2/block_1/add/add", "StatefulPartitionedCall/model/stack_4/block_2/add/add", "StatefulPartitionedCall/model/stack_6/block_0/project_bn/FusedBatchNormV3", "StatefulPartitionedCall/model/top_activation/mul"],
+    pref: ["StatefulPartitionedCall/model/stack_4/block_2/add/add", "StatefulPartitionedCall/model/stack_6/block_0/project_bn/FusedBatchNormV3"], note: "Efficient and sharp. The lightest of the new three." },
 };
-const COMING_SOON = ["VGG19", "ResNet50", "EfficientNetB0", "InceptionResNetV2", "DenseNet121"];
+const COMING_SOON = ["InceptionResNetV2", "DenseNet121"];
 // Per-model pixel math (same as the Dreamlings generator).
 const PRE = {
   v1: { norm: t => t.sub(117), denorm: t => t.add(117).div(255), lo: -117, hi: 138, noise: [-10, 10] },
@@ -51,6 +62,7 @@ const PRE = {
   vgg: { norm: t => t.reverse(-1).sub(tf.tensor1d([103.939, 116.779, 123.68])),
          denorm: t => t.add(tf.tensor1d([103.939, 116.779, 123.68])).reverse(-1).div(255),
          lo: -103.939, hi: 151.061, noise: [-10, 10] },
+  eff: { norm: t => t.div(255), denorm: t => t, lo: 0, hi: 1, noise: [-0.05, 0.05] },   // EfficientNet: scale to [0,1]
 };
 const WASM_PATH = "tfjs/";
 const QUALITY = { turbo: { w: 192, h: 192 }, fast: { w: 256, h: 256 }, normal: { w: 384, h: 384 }, high: { w: 512, h: 512 } };
@@ -77,6 +89,12 @@ const PRESETS = [
   { m: "mobilenetv2", name: "Quick sketch", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm"] } },
   { m: "mobilenetv2", name: "Pocket spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["module_apply_default/MobilenetV2/expanded_conv_10/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm"] } },
   { m: "mobilenetv1", name: "Tiny dream", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["conv_pw_11_relu", "conv_pw_12_relu"] } },
+  { m: "vgg19", name: "Deep petals", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["block4_conv4"] } },
+  { m: "vgg19", name: "VGG19 garden", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["block5_conv4", "block4_conv4"] } },
+  { m: "resnet50", name: "Residual bloom", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["activation_39"] } },
+  { m: "resnet50", name: "Deep residual", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["activation_39", "activation_21"] } },
+  { m: "efficientnetb0", name: "Efficient swirl", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["StatefulPartitionedCall/model/stack_4/block_2/add/add"] } },
+  { m: "efficientnetb0", name: "B0 bloom", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["StatefulPartitionedCall/model/stack_4/block_2/add/add", "StatefulPartitionedCall/model/stack_6/block_0/project_bn/FusedBatchNormV3"] } },
 ];
 const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 16, facing: "environment", modelSrc: "live" };
 
@@ -119,7 +137,7 @@ function dims() { return QUALITY[settings.quality] || QUALITY.normal; }
 function clampFps(v) { v = parseFloat(v); if (!(v > 0)) v = 12; return Math.max(2, Math.min(30, v)); }
 function cardFps() { return clampFps(settings.playFps); }
 // The size to feed the model at one octave. A fixed-size model
-// (MobileNetV2, MobileNetV1) takes exactly its fixed size at
+// (MobileNetV2, MobileNetV1, ResNet50) takes exactly its fixed size at
 // every octave — feeding it anything else throws the shape
 // error (284x284 into a 224x224 model). Other models take the
 // octave-scaled size, floored at minSize.
