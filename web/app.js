@@ -12,7 +12,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // v1/v2/v3/vgg16: Dreamlings exports, live on the DeepdreamlingsFusion site
 // (verified 2026-11-09: model.json 200 for all four). mobilenetv2: TF.js
 // savedmodel on Google Cloud Storage (verified: model.json 200, shard1
-// HEAD 200, 4 shards, 125 weights, 299 nodes). Coming soon (NOT shipped as
+// HEAD 200, 4 shards, 125 weights, 299 nodes). mobilenetv1 0.25_224:
+// TF.js layers model, GCS (verified 2026-11-10: loads, real gradients on
+// conv_pw_11/12; fixed 224 input like mobilenetv2). Coming soon (NOT shipped as
 // real — TFHub now redirects to Kaggle / GCS paths 404, weights unverified):
 // VGG19, ResNet50, EfficientNetB0, InceptionResNetV2, DenseNet121.
 const LIVE_BASE = "https://qu33pharcadegame.github.io/DeepdreamlingsFusion/models/";
@@ -32,6 +34,9 @@ const MODELS = {
   mobilenetv2: { short: "mobilenetv2", label: "MobileNetV2", kind: "graph", live: "https://storage.googleapis.com/tfjs-models/savedmodel/mobilenet_v2_1.0_224/model.json", local: "models/mobilenetv2/model.json", pre: "v2", trustLayers: true, minSize: 224, fixedSize: 224,
     layers: ["module_apply_default/MobilenetV2/expanded_conv_5/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_7/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_10/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_16/project/BatchNorm/FusedBatchNorm"],
     pref: ["module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm"], note: "Small and fast. Good first model on a slow phone." },
+  mobilenetv1: { short: "mobilenetv1", label: "MobileNetV1", kind: "layers", live: "https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.25_224/model.json", local: "models/mobilenetv1/model.json", pre: "v2", minSize: 224, fixedSize: 224,
+    layers: ["conv_pw_9_relu", "conv_pw_10_relu", "conv_pw_11_relu", "conv_pw_12_relu", "conv_pw_13_relu"],
+    pref: ["conv_pw_11_relu", "conv_pw_12_relu"], note: "Smallest + fastest. Good first model on a slow phone." },
 };
 const COMING_SOON = ["VGG19", "ResNet50", "EfficientNetB0", "InceptionResNetV2", "DenseNet121"];
 // Per-model pixel math (same as the Dreamlings generator).
@@ -67,6 +72,7 @@ const PRESETS = [
   { m: "vgg16", name: "Ghost garden", s: { path: "straight", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.04, sharpen: 0.3, layers: ["block5_conv3"] } },
   { m: "mobilenetv2", name: "Quick sketch", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm"] } },
   { m: "mobilenetv2", name: "Pocket spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["module_apply_default/MobilenetV2/expanded_conv_10/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm"] } },
+  { m: "mobilenetv1", name: "Tiny dream", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["conv_pw_11_relu", "conv_pw_12_relu"] } },
 ];
 const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "fast", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 16, facing: "environment", modelSrc: "live" };
 
@@ -75,7 +81,7 @@ const vid = $("vid"), artCv = $("artCv");
 const seedCv = document.createElement("canvas"), tmpCv = document.createElement("canvas");
 let settings = loadSettings();
 let MODEL = MODELS[settings.model] || MODELS.v1, P = PRE[MODEL.pre];
-let model = null, modelLayers = [], grads = {}, engineOrder = [], engineIdx = -1, ready = false;
+let model = null, midModel = null, modelLayers = [], grads = {}, engineOrder = [], engineIdx = -1, ready = false;
 let busy = false, zooming = false, playing = false, playTimer = null;
 let card = null, cur = null, msPerStep = null, stream = null;
 let JITTER = settings.jitter;
@@ -148,12 +154,14 @@ function patchBatchNorm(m) {
   for (const l of m.layers) {
     if (l.getClassName() !== "BatchNormalization" || l.scale || l.gamma) continue;
     const c = l.movingMean.shape[l.movingMean.shape.length - 1];
-    l.gamma = l.addWeight("gamma", [c], "float32", tf.initializers.ones(), null, false); l.scale = true;
+    const g = l.addWeight("gamma", [c], "float32", tf.initializers.ones(), null, false);
+    g.read().assign(tf.ones([c]));   // addWeight leaves the value at 0; gamma 0 makes BN output only beta, so v3 dreamed nothing
+    l.gamma = g; l.scale = true;
   }
 }
 function modelUrl() { return settings.modelSrc === "local" ? MODEL.local : MODEL.live; }
 async function activate(name) {
-  if (model) { model.dispose(); model = null; } grads = {}; if (cur) { cur.dispose(); cur = null; }
+  if (model) { model.dispose(); model = null; } midModel = null; grads = {}; if (cur) { cur.dispose(); cur = null; }
   if (!(await tryBackend(name))) throw new Error(name + " unavailable");
   $("engineBtn").textContent = "Engine: " + LABEL[name];
   setStatus("Loading " + MODEL.label + " on " + LABEL[name] + "…"); setBar(0);
@@ -163,6 +171,13 @@ async function activate(name) {
   } catch (e) { throw new Error("loading the model failed: " + (e && e.message || e)); }
   if (MODEL.kind === "layers") {
     modelLayers = (model.outputNames && model.outputNames.length) ? model.outputNames.slice() : model.outputs.map(o => o.sourceLayer.name);
+    if (MODEL.layers.some(n => modelLayers.indexOf(n) < 0)) {
+      // Single-output export (MobileNetV1): dream on an intermediate model
+      // over the named layers, not the final output (its gradient is 0).
+      // midModel shares the base model's weights; never dispose it alone.
+      midModel = tf.model({ inputs: model.inputs, outputs: MODEL.layers.map(n => model.getLayer(n).output) });
+      modelLayers = MODEL.layers.slice();
+    }
   } else if (MODEL.trustLayers) {
     modelLayers = MODEL.layers.slice();   // MobileNetV2 export lists only its final output; trust the listed nodes
   } else {
@@ -219,9 +234,10 @@ function getGrad() {
   const use = activeLayers(), key = use.join("+");
   if (grads[key]) return grads[key];
   if (MODEL.kind === "layers") {
+    const src = midModel || model;   // intermediate model when the export has one output
     const idx = use.map(n => modelLayers.indexOf(n));
     return grads[key] = tf.grad(img => {
-      let outs = model.apply(img, { training: false }); if (!Array.isArray(outs)) outs = [outs];
+      let outs = src.apply(img, { training: false }); if (!Array.isArray(outs)) outs = [outs];
       let loss = null; for (const i of idx) { const l = tf.mean(outs[i]); loss = loss ? loss.add(l) : l; }
       return loss;
     });
@@ -523,7 +539,7 @@ function buildModelSelect() {
   sel.value = settings.model;
   sel.addEventListener("change", () => {
     settings.model = sel.value; MODEL = MODELS[settings.model]; P = PRE[MODEL.pre];
-    settings.layers = MODEL.pref.slice(); ready = false; model = null; grads = {};
+    settings.layers = MODEL.pref.slice(); ready = false; model = null; midModel = null; grads = {};
     buildLayers(); buildPresets(); saveSettings(); updateUI();
     setStatus(MODEL.label + " selected. It loads when you shoot.");
   });
@@ -595,7 +611,7 @@ function initControls() {
   $("facing").addEventListener("change", () => { settings.facing = $("facing").value; saveSettings(); startCamera(); });
   $("modelSrc").value = settings.modelSrc;
   $("engineBtn").addEventListener("click", () => { cycleEngine(); });
-  $("modelSrc").addEventListener("change", () => { settings.modelSrc = $("modelSrc").value; ready = false; model = null; saveSettings(); setStatus("Model source: " + (settings.modelSrc === "local" ? "local models/ folder" : "live site") + ". Loads on next shoot."); });
+  $("modelSrc").addEventListener("change", () => { settings.modelSrc = $("modelSrc").value; ready = false; model = null; midModel = null; saveSettings(); setStatus("Model source: " + (settings.modelSrc === "local" ? "local models/ folder" : "live site") + ". Loads on next shoot."); });
   $("shootBtn").onclick = shootAndDream;
   $("viewBox").onclick = () => { if (!busy && !zooming && card && card.frames.length && $("viewBox").classList.contains("dreaming")) return; shootAndDream(); };
   $("stopBtn").onclick = () => { zooming = false; busy = false; setStatus("Stopped."); updateUI(); };
