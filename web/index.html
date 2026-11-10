@@ -7,45 +7,48 @@
 <style>
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0;background:#0a0620;color:#efeaff;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column;overflow:hidden}
+  body{margin:0;background:#070213;color:#efeaff;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column;overflow:hidden;
+    background-image:radial-gradient(600px 300px at 15% -5%,rgba(255,47,214,.22),transparent 70%),radial-gradient(600px 300px at 90% 110%,rgba(0,229,255,.18),transparent 70%)}
   header{padding:10px 14px 4px;display:flex;justify-content:space-between;align-items:baseline;flex-shrink:0}
-  header h1{font-size:18px;margin:0;letter-spacing:.5px}
-  header span{font-size:12px;opacity:.7}
+  header h1{font-size:18px;margin:0;letter-spacing:.5px;color:#ff2fd6;text-shadow:0 0 12px rgba(255,47,214,.7),0 0 30px rgba(0,229,255,.35)}
+  header span{font-size:12px;opacity:.7;color:#7df9ff}
   main{max-width:560px;width:100%;margin:0 auto;padding:0 10px;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
-  .square{position:relative;width:100%;aspect-ratio:1/1;background:#000;border-radius:14px;overflow:hidden;border:1px solid #3a2a6e;flex-shrink:0}
+  .square{position:relative;width:100%;aspect-ratio:1/1;background:#000;border-radius:14px;overflow:hidden;border:1px solid rgba(255,47,214,.55);box-shadow:0 0 22px rgba(255,47,214,.30),0 0 44px rgba(0,229,255,.12);flex-shrink:0;touch-action:none}
   .square video,.square canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
   .square canvas{display:none}
   .square.dreaming canvas{display:block}
   .square.dreaming video{display:none}
   .square .hint{position:absolute;inset:auto 0 8px 0;text-align:center;font-size:12px;opacity:.65;pointer-events:none}
-  .panel{margin-top:10px;background:#171034;border:1px solid #3a2a6e;border-radius:14px;padding:12px}
-  .panel h2{font-size:13px;margin:0 0 8px;opacity:.8;text-transform:uppercase;letter-spacing:1px}
+  .panel{margin-top:10px;background:rgba(20,8,46,.88);border:1px solid rgba(168,85,247,.45);border-radius:14px;padding:12px;box-shadow:0 0 24px rgba(123,47,255,.25)}
+  .panel h2{font-size:13px;margin:0 0 8px;color:#7df9ff;text-shadow:0 0 10px rgba(0,229,255,.6);text-transform:uppercase;letter-spacing:1px}
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
   .grid label{display:block;font-size:12px;opacity:.85}
   .grid label b{display:block;font-weight:600;margin-bottom:2px}
-  .grid select,.grid input[type=number],.grid input[type=text]{width:100%;background:#0d0826;color:#efeaff;border:1px solid #4a3690;border-radius:8px;padding:6px;font-size:14px}
-  .grid input[type=range]{width:100%}
+  .grid select,.grid input[type=number],.grid input[type=text]{width:100%;background:#150a33;color:#efeaff;border:1px solid #a855f7;border-radius:8px;padding:6px;font-size:14px}
+  .grid select:focus,.grid input:focus{outline:none;border-color:#00e5ff;box-shadow:0 0 10px rgba(0,229,255,.5)}
+  .grid input[type=range]{width:100%;accent-color:#ff2fd6}
   .grid .val{font-size:11px;opacity:.7}
   .full{grid-column:1/-1}
   .layers{display:flex;flex-wrap:wrap;gap:6px}
-  .layers label{border:1px solid #4a3690;border-radius:20px;padding:4px 9px;font-size:12px;cursor:pointer}
+  .layers label{border:1px solid rgba(0,229,255,.6);color:#c9f6ff;border-radius:20px;padding:4px 9px;font-size:12px;cursor:pointer}
   .layers input{display:none}
-  .layers label.on{background:#6a4fd0;border-color:#8a6ff0}
+  .layers label.on{background:linear-gradient(135deg,#ff2fd6,#7b2fff);border-color:#ff2fd6;color:#fff;box-shadow:0 0 12px rgba(255,47,214,.5)}
   .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
   button{background:#6a4fd0;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-size:15px;cursor:pointer}
   button:disabled{opacity:.4;cursor:default}
-  button.ghost{background:#241a4d}
-  button.big{flex:1;font-size:17px;padding:13px}
-  #status{font-size:13px;min-height:18px;margin-top:10px}
+  button.ghost{background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.5);color:#bff6ff}
+  button.big{flex:1;font-size:17px;font-weight:700;padding:13px;background:linear-gradient(135deg,#ff2fd6,#7b2fff 55%,#00e5ff);box-shadow:0 0 18px rgba(255,47,214,.55);animation:neonPulse 2.4s ease-in-out infinite}
+  @keyframes neonPulse{0%,100%{box-shadow:0 0 14px rgba(255,47,214,.45)}50%{box-shadow:0 0 26px rgba(0,229,255,.55)}}
+  #status{font-size:13px;min-height:18px;margin-top:10px;color:#7df9ff}
   #status.err{color:#ff7b7b}
-  #bar{height:8px;background:#241a4d;border-radius:4px;overflow:hidden;visibility:hidden;margin-top:6px}
-  #bar i{display:block;height:100%;width:0;background:#8a6ff0}
+  #bar{height:8px;background:rgba(0,229,255,.12);border-radius:4px;overflow:hidden;visibility:hidden;margin-top:6px}
+  #bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#ff2fd6,#00e5ff);box-shadow:0 0 10px rgba(0,229,255,.7)}
   #estimate{font-size:12px;opacity:.7;margin-top:4px}
   #scrollArea{flex:1;min-height:0;overflow-y:auto;padding-bottom:40px;-webkit-overflow-scrolling:touch}
   #gallery{margin-top:14px}
-  #gallery h2{font-size:15px;margin:0 0 8px}
+  #gallery h2{font-size:15px;margin:0 0 8px;color:#7df9ff;text-shadow:0 0 10px rgba(0,229,255,.6)}
   .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-  .tile{background:#171034;border:1px solid #3a2a6e;border-radius:12px;overflow:hidden;padding:0;cursor:pointer;text-align:left;color:#efeaff}
+  .tile{background:rgba(20,8,46,.88);border:1px solid rgba(0,229,255,.35);border-radius:12px;overflow:hidden;padding:0;cursor:pointer;text-align:left;color:#efeaff;box-shadow:0 0 14px rgba(123,47,255,.18)}
   .tile img,.tile video{width:100%;aspect-ratio:1/1;object-fit:cover;display:block;background:#000}
   .tile .meta{padding:6px 8px;font-size:12px}
   .tile .meta small{opacity:.65;display:block}
@@ -56,7 +59,7 @@
 </style>
 </head>
 <body>
-<header><h1>📷 DreamCamera</h1><span>deepdream camera · v1</span></header>
+<header><h1>📷 DreamCamera</h1><span>deepdream camera · v1.3</span></header>
 <main>
   <!-- TOP SQUARE: viewfinder. Plain: nothing drawn over the picture. Tap = shutter. -->
   <div class="square" id="viewBox" title="Tap to shoot">
@@ -72,6 +75,7 @@
     <div class="row" style="margin-top:0;margin-bottom:10px">
       <button class="big" id="shootBtn">📷 Shoot &amp; Dream</button>
       <button class="ghost" id="stopBtn" disabled>Stop</button>
+      <button class="ghost" id="resetBtn">Reset</button>
     </div>
     <div class="grid">
       <label class="full"><b>Model</b>
@@ -95,7 +99,7 @@
       <label><b>Frames / run <span class="val" id="framesVal"></span></b>
         <input type="range" id="frames" min="1" max="50" step="1"></label>
       <label><b>Image size</b>
-        <select id="quality"><option value="fast">Fast · 256</option><option value="normal" selected>Normal · 384</option><option value="high">High · 512</option></select></label>
+        <select id="quality"><option value="turbo">Turbo · 192</option><option value="fast">Fast · 256</option><option value="normal" selected>Normal · 384</option><option value="high">High · 512</option></select></label>
       <label><b>Play fps in <span class="val" id="playFpsVal"></span></b>
         <input type="range" id="playFps" min="2" max="30" step="1"></label>
       <label><b>Play fps out <span class="val" id="playFpsOutVal"></span></b>
@@ -135,7 +139,7 @@
   </section>
   </div>
 </main>
-<footer>DreamCamera v1 · camera only, no game · models load on demand, nothing leaves your device except model downloads · <a href="README.md">README</a></footer>
+<footer>DreamCamera v1.3 · camera only, no game · models load on demand, nothing leaves your device except model downloads · <a href="README.md">README</a></footer>
 <script src="tfjs/tf.min.js"></script>
 <script src="tfjs/tf-backend-wasm.min.js"></script>
 <script src="tfjs/tf-backend-webgpu.min.js"></script>
