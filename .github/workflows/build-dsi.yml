@@ -1,0 +1,23 @@
+name: Build DreamCamera DSi
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: skylyrac/blocksds:slim-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dreamcamera.nds (DSi mode)
+        run: |
+          cat Makefile
+          make SPECS="$BLOCKSDS/sys/crts/dsi_arm9.specs"
+          ls -la *.nds
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dreamcamera-dsi
+          path: "*.nds"
