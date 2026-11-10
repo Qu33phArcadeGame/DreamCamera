@@ -19,7 +19,7 @@ Needs `web/models/` downloaded first for offline models:
   page can fetch the bundled `models/` folder.
 - Asks for the Camera permission at runtime and grants the page's
   `getUserMedia` video request.
-- Models: all nine real models bundled (~300 MB), so it dreams fully offline.
+- Models: all eleven real models bundled (~535 MB), so it dreams fully offline.
   Set Model source to Live site in the app to use online models instead.
 - Home screen widgets: DreamCamera 2x2 (latest dream, tap to open) and
   DreamCamera Shoot 3x3 (latest dream + Shoot & Dream button). The page
