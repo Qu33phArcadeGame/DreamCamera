@@ -1,4 +1,4 @@
-// DreamCamera v1.3 — deepdream camera. Web app.
+// DreamCamera v1.4 — deepdream camera. Web app.
 // Dream engine ported from the Dreamlings generator (generator.html):
 // same MODELS registry shape, PRE pixel math, gradient-ascent dreamStep,
 // zoomCrop + path offsets, octave start-dream, engine fallback.
@@ -96,6 +96,21 @@ let camZoom = 1, pinch = null, pinchEndAt = 0;
 const CAM_ZOOM_MAX = 5;
 function applyCamZoom() { vid.style.transform = camZoom > 1 ? "scale(" + camZoom.toFixed(3) + ")" : ""; }
 
+// Widget support (Android app only). The app's Shoot & Dream widget
+// launches the page with ?autodream=1; once the camera is ready the
+// page starts a dream by itself, once per load.
+let autoDreamDone = false;
+const AUTO_DREAM = /[?&]autodream=1/.test(location.href);
+// Hand the latest dream frame to the Android app (if any) so the
+// home screen widgets can show it. No-op on the web.
+function sendLatestDreamToWidget() {
+  try {
+    if (window.DreamCameraBridge && window.DreamCameraBridge.setLatestDream && artCv.width) {
+      window.DreamCameraBridge.setLatestDream(artCv.toDataURL("image/jpeg", 0.85));
+    }
+  } catch (e) {}
+}
+
 function loadSettings() { let s = {}; try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {}; } catch (e) {} return Object.assign({}, DEFAULTS, s); }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} updateEstimate(); }
 function setStatus(t, err) { const s = $("status"); s.textContent = t; s.className = err ? "err" : ""; }
@@ -128,6 +143,7 @@ async function startCamera() {
     await vid.play();
     $("viewHint").textContent = "tap to shoot";
     setStatus("Camera ready. Tap the picture, or Shoot & Dream.");
+    if (AUTO_DREAM && !autoDreamDone) { autoDreamDone = true; setTimeout(() => { if (!busy && !zooming) shootAndDream(); }, 600); }
   } catch (e) {
     setStatus("No camera: " + (e && e.message || e) + " — use Upload a photo instead.", true);
     $("viewHint").textContent = "no camera — upload a photo";
@@ -414,6 +430,7 @@ async function zoomRun() {
     else if (made >= want) setStatus("Done: " + card.frames.length + " frames. Continue for 50 more, or save.");
     else setStatus(card.frames.length + " frames. Stopped.");
   }
+  sendLatestDreamToWidget();
   startPlaying();
   updateUI();
 }
@@ -494,7 +511,7 @@ async function keepInGallery() {
   if (!card || !card.frames.length) return;
   const thumb = card.frames[0];
   const rec = { id: card.id, created: card.created, no: card.no, name: card.name, model: card.model, preset: card.preset, w: card.w, h: card.h, frames: card.frames.slice(), thumb: thumb, settings: card.settings };
-  try { await idbDo("readwrite", st => st.put(rec)); setStatus("Kept in gallery."); renderGallery(); }
+  try { await idbDo("readwrite", st => st.put(rec)); setStatus("Kept in gallery."); renderGallery(); sendLatestDreamToWidget(); }
   catch (e) { setStatus("Couldn't keep it: " + (e && e.message || e), true); }
 }
 async function renderGallery() {
