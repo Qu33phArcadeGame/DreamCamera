@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DreamCamera</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#0a0620;color:#efeaff;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{padding:10px 14px 4px;display:flex;justify-content:space-between;align-items:baseline}
+  header h1{font-size:18px;margin:0;letter-spacing:.5px}
+  header span{font-size:12px;opacity:.7}
+  main{max-width:560px;margin:0 auto;padding:0 10px 40px}
+  .square{position:relative;width:100%;aspect-ratio:1/1;background:#000;border-radius:14px;overflow:hidden;border:1px solid #3a2a6e}
+  .square video,.square canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+  .square canvas{display:none}
+  .square.dreaming canvas{display:block}
+  .square.dreaming video{display:none}
+  .square .hint{position:absolute;inset:auto 0 8px 0;text-align:center;font-size:12px;opacity:.65;pointer-events:none}
+  .panel{margin-top:10px;background:#171034;border:1px solid #3a2a6e;border-radius:14px;padding:12px}
+  .panel h2{font-size:13px;margin:0 0 8px;opacity:.8;text-transform:uppercase;letter-spacing:1px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
+  .grid label{display:block;font-size:12px;opacity:.85}
+  .grid label b{display:block;font-weight:600;margin-bottom:2px}
+  .grid select,.grid input[type=number],.grid input[type=text]{width:100%;background:#0d0826;color:#efeaff;border:1px solid #4a3690;border-radius:8px;padding:6px;font-size:14px}
+  .grid input[type=range]{width:100%}
+  .grid .val{font-size:11px;opacity:.7}
+  .full{grid-column:1/-1}
+  .layers{display:flex;flex-wrap:wrap;gap:6px}
+  .layers label{border:1px solid #4a3690;border-radius:20px;padding:4px 9px;font-size:12px;cursor:pointer}
+  .layers input{display:none}
+  .layers label.on{background:#6a4fd0;border-color:#8a6ff0}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  button{background:#6a4fd0;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-size:15px;cursor:pointer}
+  button:disabled{opacity:.4;cursor:default}
+  button.ghost{background:#241a4d}
+  button.big{flex:1;font-size:17px;padding:13px}
+  #status{font-size:13px;min-height:18px;margin-top:10px}
+  #status.err{color:#ff7b7b}
+  #bar{height:8px;background:#241a4d;border-radius:4px;overflow:hidden;visibility:hidden;margin-top:6px}
+  #bar i{display:block;height:100%;width:0;background:#8a6ff0}
+  #estimate{font-size:12px;opacity:.7;margin-top:4px}
+  #gallery{margin-top:14px}
+  #gallery h2{font-size:15px;margin:0 0 8px}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+  .tile{background:#171034;border:1px solid #3a2a6e;border-radius:12px;overflow:hidden;padding:0;cursor:pointer;text-align:left;color:#efeaff}
+  .tile img,.tile video{width:100%;aspect-ratio:1/1;object-fit:cover;display:block;background:#000}
+  .tile .meta{padding:6px 8px;font-size:12px}
+  .tile .meta small{opacity:.65;display:block}
+  .tile .del{float:right;background:#a33;border-radius:6px;padding:2px 7px;font-size:12px}
+  .empty{opacity:.6;font-size:13px;padding:10px}
+  footer{font-size:11px;opacity:.55;padding:14px;text-align:center}
+  a{color:#b9a5ff}
+</style>
+</head>
+<body>
+<header><h1>📷 DreamCamera</h1><span>deepdream camera · v1</span></header>
+<main>
+  <!-- TOP SQUARE: viewfinder. Plain: nothing drawn over the picture. Tap = shutter. -->
+  <div class="square" id="viewBox" title="Tap to shoot">
+    <video id="vid" autoplay muted playsinline></video>
+    <canvas id="artCv"></canvas>
+    <div class="hint" id="viewHint">tap to shoot</div>
+  </div>
+
+  <!-- BOTTOM SQUARE: everything else -->
+  <section class="panel" aria-label="Settings">
+    <h2>Settings</h2>
+    <div class="grid">
+      <label class="full"><b>Model</b>
+        <select id="modelSel"></select>
+        <span class="val" id="modelNote"></span>
+      </label>
+      <label class="full"><b>Preset</b><select id="presetSel"></select></label>
+      <label class="full"><b>Dream layers</b><span class="layers" id="layerBox"></span></label>
+      <label><b>Steps / frame <span class="val" id="stepsVal"></span></b>
+        <input type="range" id="steps" min="1" max="30" step="1"></label>
+      <label><b>Learning rate <span class="val" id="lrVal"></span></b>
+        <input type="range" id="lr" min="0.01" max="0.10" step="0.005"></label>
+      <label><b>Zoom / frame <span class="val" id="zoomFactorVal"></span></b>
+        <input type="range" id="zoomFactor" min="0.90" max="0.995" step="0.005"></label>
+      <label><b>Zoom path</b>
+        <select id="path"><option value="straight">Straight</option><option value="square">Square</option><option value="triangle">Triangle</option><option value="spiral">Spiral</option><option value="wave">Wave</option></select></label>
+      <label><b>Path range <span class="val" id="rangeVal"></span></b>
+        <input type="range" id="range" min="0" max="0.20" step="0.01"></label>
+      <label><b>Path segment <span class="val" id="segFramesVal"></span></b>
+        <input type="range" id="segFrames" min="4" max="20" step="1"></label>
+      <label><b>Frames / run <span class="val" id="framesVal"></span></b>
+        <input type="range" id="frames" min="1" max="50" step="1"></label>
+      <label><b>Image size</b>
+        <select id="quality"><option value="fast">Fast · 256</option><option value="normal" selected>Normal · 384</option><option value="high">High · 512</option></select></label>
+      <label><b>Play fps in <span class="val" id="playFpsVal"></span></b>
+        <input type="range" id="playFps" min="2" max="30" step="1"></label>
+      <label><b>Play fps out <span class="val" id="playFpsOutVal"></span></b>
+        <input type="range" id="playFpsOut" min="2" max="30" step="1"></label>
+      <label><b>Zoomerang</b>
+        <select id="boomerang"><option value="1">On · zoom in, then back out</option><option value="0">Off · loop forward</option></select></label>
+      <label><b>Sharpen <span class="val" id="sharpenVal"></span></b>
+        <input type="range" id="sharpen" min="0" max="1" step="0.05"></label>
+      <label><b>Octaves <span class="val" id="octavesVal"></span></b>
+        <input type="range" id="octaves" min="1" max="3" step="1"></label>
+      <label><b>Jitter <span class="val" id="jitterVal"></span></b>
+        <input type="range" id="jitter" min="0" max="32" step="1"></label>
+      <label><b>Camera</b>
+        <select id="facing"><option value="environment">Back</option><option value="user">Front</option></select></label>
+      <label><b>Model source</b>
+        <select id="modelSrc"><option value="live">Live site (online)</option><option value="local">Local models/ folder</option></select></label>
+      <label><b>Engine</b><span class="val" id="engineBtn">—</span></label>
+    </div>
+    <div class="row">
+      <button class="big" id="shootBtn">📷 Shoot &amp; Dream</button>
+      <button class="ghost" id="stopBtn" disabled>Stop</button>
+    </div>
+    <div class="row">
+      <button class="ghost" id="continueBtn" disabled>Continue +50</button>
+      <button class="ghost" id="videoBtn" disabled>Save video</button>
+      <button class="ghost" id="stillBtn" disabled>Save still</button>
+      <button class="ghost" id="keepBtn" disabled>Keep in gallery</button>
+    </div>
+    <div class="row">
+      <button class="ghost" id="uploadBtn">Upload a photo instead</button>
+      <input type="file" id="fileIn" accept="image/*" hidden>
+    </div>
+    <div id="status">Starting camera…</div>
+    <div id="bar"><i></i></div>
+    <div id="estimate"></div>
+  </section>
+
+  <section id="gallery">
+    <h2>Gallery</h2>
+    <div class="tiles" id="tiles"><div class="empty">Nothing yet. Shoot a photo and dream it.</div></div>
+  </section>
+</main>
+<footer>DreamCamera v1 · camera only, no game · models load on demand, nothing leaves your device except model downloads · <a href="README.md">README</a></footer>
+<script src="tfjs/tf.min.js"></script>
+<script src="tfjs/tf-backend-wasm.min.js"></script>
+<script src="tfjs/tf-backend-webgpu.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
