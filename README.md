@@ -1,4 +1,4 @@
-# DreamCamera v1.3
+# DreamCamera v1.4
 
 Deepdream camera. Nothing else. No dreamlings, no game, no coins.
 
@@ -35,6 +35,8 @@ Verified 2026-11-09: Inception v1 and MobileNetV2 loaded in TF.js 4.22.0 and pro
 Verified 2026-11-10 (v1.2, pushed): MobileNetV1 0.25_224 loads in TF.js 4.22.0, 1.9 MB, real gradients on conv_pw_11/12 at 224×224 (fixed 224 input, like MobileNetV2). Same check found Inception v3 was silently dreaming nothing: its 70 BatchNorm layers have no gamma, and the patch that adds one left it at 0, so every BatchNorm output was just its beta — v3 is fixed in this build by setting the patched gamma to 1 (verified: all six mixed outputs now vary with the input, mixed6 gradient real).
 
 v1.3: neon redesign, Reset button (stops the dream, back to the live camera with default settings), Turbo 192 size (default), half-float WebGL textures for speed.
+
+v1.4: home screen widgets (Android app only) — DreamCamera 2x2 shows your latest dream, tap to open; DreamCamera Shoot 3x3 shows it big with a Shoot & Dream button that opens the app and starts a dream right away. The app hands each finished dream to the widgets through a JS bridge.
 
 ## DSi
 
