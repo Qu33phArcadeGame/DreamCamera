@@ -1,4 +1,4 @@
-// DreamCamera v1 — deepdream camera. Web app.
+// DreamCamera v1.3 — deepdream camera. Web app.
 // Dream engine ported from the Dreamlings generator (generator.html):
 // same MODELS registry shape, PRE pixel math, gradient-ascent dreamStep,
 // zoomCrop + path offsets, octave start-dream, engine fallback.
@@ -7,6 +7,10 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Mobile GPUs: half-float textures halve the bandwidth per dream step.
+// Set before any backend is created; ignored if the flag is unknown.
+try { tf.env().set("WEBGL_FORCE_F16_TEXTURES", true); } catch (e) {}
 
 // ===== MODELS =====
 // v1/v2/v3/vgg16: Dreamlings exports, live on the DeepdreamlingsFusion site
@@ -49,7 +53,7 @@ const PRE = {
          lo: -103.939, hi: 151.061, noise: [-10, 10] },
 };
 const WASM_PATH = "tfjs/";
-const QUALITY = { fast: { w: 256, h: 256 }, normal: { w: 384, h: 384 }, high: { w: 512, h: 512 } };
+const QUALITY = { turbo: { w: 192, h: 192 }, fast: { w: 256, h: 256 }, normal: { w: 384, h: 384 }, high: { w: 512, h: 512 } };
 const MAX_RUN = 50, TOTAL_MAX = 500;   // 50 frames per run; Continue adds 50 more, up to 500 total
 const OCTAVE_SCALE = 1.35;
 const LABEL = { webgpu: "WebGPU (GPU)", webgl: "WebGL (GPU)", wasm: "WebAssembly (CPU)", cpu: "JavaScript (CPU)" };
@@ -74,7 +78,7 @@ const PRESETS = [
   { m: "mobilenetv2", name: "Pocket spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["module_apply_default/MobilenetV2/expanded_conv_10/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm"] } },
   { m: "mobilenetv1", name: "Tiny dream", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["conv_pw_11_relu", "conv_pw_12_relu"] } },
 ];
-const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "fast", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 16, facing: "environment", modelSrc: "live" };
+const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 16, facing: "environment", modelSrc: "live" };
 
 // ===== STATE =====
 const vid = $("vid"), artCv = $("artCv");
@@ -85,6 +89,12 @@ let model = null, midModel = null, modelLayers = [], grads = {}, engineOrder = [
 let busy = false, zooming = false, playing = false, playTimer = null;
 let card = null, cur = null, msPerStep = null, stream = null;
 let JITTER = settings.jitter;
+
+// Camera zoom. Display scales the live video; capture crops the same
+// centre region, so the dream sees exactly what the viewfinder shows.
+let camZoom = 1, pinch = null, pinchEndAt = 0;
+const CAM_ZOOM_MAX = 5;
+function applyCamZoom() { vid.style.transform = camZoom > 1 ? "scale(" + camZoom.toFixed(3) + ")" : ""; }
 
 function loadSettings() { let s = {}; try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {}; } catch (e) {} return Object.assign({}, DEFAULTS, s); }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} updateEstimate(); }
@@ -128,7 +138,7 @@ function captureSquare() {
   const q = dims(), c = document.createElement("canvas"); c.width = q.w; c.height = q.h;
   const ctx = c.getContext("2d");
   if (vid.readyState >= 2 && vid.videoWidth) {
-    const s = Math.min(vid.videoWidth, vid.videoHeight);
+    const s = Math.min(vid.videoWidth, vid.videoHeight) / camZoom;   // zoomed: crop the centre, same as the scaled viewfinder
     ctx.drawImage(vid, (vid.videoWidth - s) / 2, (vid.videoHeight - s) / 2, s, s, 0, 0, q.w, q.h);
   } else { ctx.fillStyle = "#222"; ctx.fillRect(0, 0, q.w, q.h); }
   return c;
@@ -516,6 +526,26 @@ async function renderGallery() {
 }
 
 // ===== UI =====
+// Reset: stop everything, drop the dream, back to the live camera
+// with the default settings.
+async function resetCamera() {
+  zooming = false; busy = false; stopPlaying();
+  disposeCard();
+  $("viewBox").classList.remove("dreaming");
+  $("viewHint").textContent = "tap to shoot";
+  setBar(null);
+  camZoom = 1; applyCamZoom();
+  settings = Object.assign({}, DEFAULTS);
+  JITTER = settings.jitter; msPerStep = null;
+  MODEL = MODELS[settings.model]; P = PRE[MODEL.pre];
+  ready = false; model = null; midModel = null; grads = {};
+  saveSettings();
+  buildModelSelect(); buildLayers(); buildPresets();
+  if (PRESETS[settings.preset] && PRESETS[settings.preset].m === MODEL.short) applyPreset(settings.preset);
+  syncControls();
+  updateUI();
+  await startCamera();
+}
 function updateUI() {
   $("shootBtn").disabled = busy || zooming;
   $("stopBtn").disabled = !(busy || zooming);
@@ -532,17 +562,20 @@ function bindRange(id, key, fmt, after) {
   show();
   el.addEventListener("input", () => { settings[key] = parseFloat(el.value); show(); saveSettings(); if (after) after(); });
 }
+function onModelChange() {
+  const sel = $("modelSel");
+  settings.model = sel.value; MODEL = MODELS[settings.model]; P = PRE[MODEL.pre];
+  settings.layers = MODEL.pref.slice(); ready = false; model = null; midModel = null; grads = {};
+  buildLayers(); buildPresets(); saveSettings(); updateUI();
+  setStatus(MODEL.label + " selected. It loads when you shoot.");
+}
 function buildModelSelect() {
   const sel = $("modelSel"); sel.innerHTML = "";
   for (const k of Object.keys(MODELS)) { const o = document.createElement("option"); o.value = k; o.textContent = MODELS[k].label; sel.appendChild(o); }
   for (const n of COMING_SOON) { const o = document.createElement("option"); o.disabled = true; o.textContent = n + " — coming soon"; sel.appendChild(o); }
   sel.value = settings.model;
-  sel.addEventListener("change", () => {
-    settings.model = sel.value; MODEL = MODELS[settings.model]; P = PRE[MODEL.pre];
-    settings.layers = MODEL.pref.slice(); ready = false; model = null; midModel = null; grads = {};
-    buildLayers(); buildPresets(); saveSettings(); updateUI();
-    setStatus(MODEL.label + " selected. It loads when you shoot.");
-  });
+  sel.removeEventListener("change", onModelChange);
+  sel.addEventListener("change", onModelChange);
 }
 function buildLayers() {
   const box = $("layerBox"); box.innerHTML = "";
@@ -613,8 +646,27 @@ function initControls() {
   $("engineBtn").addEventListener("click", () => { cycleEngine(); });
   $("modelSrc").addEventListener("change", () => { settings.modelSrc = $("modelSrc").value; ready = false; model = null; midModel = null; saveSettings(); setStatus("Model source: " + (settings.modelSrc === "local" ? "local models/ folder" : "live site") + ". Loads on next shoot."); });
   $("shootBtn").onclick = shootAndDream;
-  $("viewBox").onclick = () => { if (!busy && !zooming && card && card.frames.length && $("viewBox").classList.contains("dreaming")) return; shootAndDream(); };
+  $("viewBox").onclick = () => { if (Date.now() - pinchEndAt < 400) return; if (!busy && !zooming && card && card.frames.length && $("viewBox").classList.contains("dreaming")) return; shootAndDream(); };
+  const vb = $("viewBox");
+  vb.addEventListener("touchstart", e => {
+    if (e.touches.length === 2 && !vb.classList.contains("dreaming")) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX, dy = e.touches[0].clientY - e.touches[1].clientY;
+      pinch = { d: Math.hypot(dx, dy), z: camZoom };
+    }
+  }, { passive: true });
+  vb.addEventListener("touchmove", e => {
+    if (e.touches.length === 2 && pinch && !vb.classList.contains("dreaming")) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX, dy = e.touches[0].clientY - e.touches[1].clientY;
+      camZoom = Math.max(1, Math.min(CAM_ZOOM_MAX, pinch.z * Math.hypot(dx, dy) / pinch.d));
+      applyCamZoom();
+    }
+  }, { passive: false });
+  const endPinch = e => { if (pinch && e.touches.length < 2) { pinch = null; pinchEndAt = Date.now(); } };
+  vb.addEventListener("touchend", endPinch);
+  vb.addEventListener("touchcancel", endPinch);
   $("stopBtn").onclick = () => { zooming = false; busy = false; setStatus("Stopped."); updateUI(); };
+  $("resetBtn").onclick = resetCamera;
   $("continueBtn").onclick = async () => { if (card && card.frames.length) await zoomRun(); };
   $("videoBtn").onclick = exportVideo;
   $("stillBtn").onclick = exportStill;
