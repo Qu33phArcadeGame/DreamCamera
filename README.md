@@ -47,7 +47,7 @@ Camera: libnds DSi camera API — `cameraInit()`, `cameraSelect(CAMERA_INNER/OUT
 
 `android/build_apk.sh` builds `com.dreamcamera.app` from `web/` + downloaded models. Needs Camera permission. See `android/README.md`.
 
-## Test first (Coby)
+## Test first
 
 1. Phone: open the web app, back camera, Inception v1, Shoot & Dream. Should reach 50 frames, then offer Continue / Save video.
 2. Same shot on MobileNetV2 — fastest model.
