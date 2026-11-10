@@ -29,7 +29,7 @@ const MODELS = {
   vgg16: { short: "vgg16", label: "VGG16", kind: "layers", live: LIVE_BASE + "vgg16/model.json", local: "models/vgg16/model.json", pre: "vgg",
     layers: ["block1_conv2", "block2_conv2", "block3_conv3", "block4_conv3", "block5_conv3"],
     pref: ["block4_conv3"], note: "Painterly swirls; deep blocks make flowing organic shapes. Slowest model." },
-  mobilenetv2: { short: "mobilenetv2", label: "MobileNetV2", kind: "graph", live: "https://storage.googleapis.com/tfjs-models/savedmodel/mobilenet_v2_1.0_224/model.json", local: "models/mobilenetv2/model.json", pre: "v2", trustLayers: true, minSize: 224,
+  mobilenetv2: { short: "mobilenetv2", label: "MobileNetV2", kind: "graph", live: "https://storage.googleapis.com/tfjs-models/savedmodel/mobilenet_v2_1.0_224/model.json", local: "models/mobilenetv2/model.json", pre: "v2", trustLayers: true, minSize: 224, fixedSize: 224,
     layers: ["module_apply_default/MobilenetV2/expanded_conv_5/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_7/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_10/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_16/project/BatchNorm/FusedBatchNorm"],
     pref: ["module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm"], note: "Small and fast. Good first model on a slow phone." },
 };
@@ -68,7 +68,7 @@ const PRESETS = [
   { m: "mobilenetv2", name: "Quick sketch", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm"] } },
   { m: "mobilenetv2", name: "Pocket spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["module_apply_default/MobilenetV2/expanded_conv_10/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm"] } },
 ];
-const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "normal", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 16, facing: "environment", modelSrc: "live" };
+const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "fast", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 16, facing: "environment", modelSrc: "live" };
 
 // ===== STATE =====
 const vid = $("vid"), artCv = $("artCv");
@@ -87,6 +87,16 @@ function setBar(p) { const b = $("bar"); if (p == null) { b.style.visibility = "
 function dims() { return QUALITY[settings.quality] || QUALITY.normal; }
 function clampFps(v) { v = parseFloat(v); if (!(v > 0)) v = 12; return Math.max(2, Math.min(30, v)); }
 function cardFps() { return clampFps(settings.playFps); }
+// The size to feed the model at one octave. A fixed-size model
+// (MobileNetV2, MobileNetV1) takes exactly its fixed size at
+// every octave — feeding it anything else throws the shape
+// error (284x284 into a 224x224 model). Other models take the
+// octave-scaled size, floored at minSize.
+function dreamHW(h, w, s) {
+  if (MODEL.fixedSize) return [MODEL.fixedSize, MODEL.fixedSize];
+  return [Math.max(MODEL.minSize || 96, Math.round(h * s)),
+          Math.max(MODEL.minSize || 96, Math.round(w * s))];
+}
 function cardFpsOut() { return clampFps(settings.playFpsOut); }
 function cardBoom() { return settings.boomerang !== false; }
 function seqLength() { const n = card.frames.length; return (cardBoom() && n > 2) ? 2 * n - 2 : n; }
@@ -160,8 +170,28 @@ async function activate(name) {
     modelLayers = MODEL.layers.filter(n => have.indexOf(n) >= 0 || have.indexOf(n + ":0") >= 0);
   }
   setStatus("Warming up the dream engine…"); setBar(null);
-  try { const ws = MODEL.minSize || 96; const t = tf.randomUniform([1, ws, ws, 3], P.lo, P.hi), s = dreamStep(t, 0.01); await s.data(); t.dispose(); s.dispose(); }
+  try { const ws = MODEL.fixedSize || MODEL.minSize || 96; const t = tf.randomUniform([1, ws, ws, 3], P.lo, P.hi), s = dreamStep(t, 0.01); await s.data(); t.dispose(); s.dispose(); }
   catch (e) { throw new Error("the test dream failed: " + (e && e.message || e)); }
+}
+// Tap the Engine row: re-test every backend, then switch to
+// the next one that works and reload the model on it.
+async function cycleEngine() {
+  if (busy || zooming) return;
+  setStatus("Testing engines…");
+  await benchEngines();
+  if (!engineOrder.length) { setStatus("No dream engine on this device.", true); return; }
+  const cur = tf.getBackend();
+  const i = engineOrder.indexOf(cur);
+  const next = engineOrder[(i + 1) % engineOrder.length];
+  engineIdx = engineOrder.indexOf(next);
+  ready = false;
+  try {
+    await activate(next);
+    setStatus("Engine: " + LABEL[next] + ". Ready.");
+  } catch (e) {
+    setStatus("Could not start " + LABEL[next] + ": " + (e && e.message || e), true);
+  }
+  updateUI();
 }
 async function nextEngine() {
   while (++engineIdx < engineOrder.length) {
@@ -300,7 +330,7 @@ async function startDream() {
     try {
       let img = tf.tidy(() => canvasToTensor(seedCv));
       for (let o = octaves - 1; o >= 0; o--) {
-        const s = Math.pow(OCTAVE_SCALE, -o), h = Math.max(MODEL.minSize || 96, Math.round(card.h * s)), w = Math.max(MODEL.minSize || 96, Math.round(card.w * s));
+        const s = Math.pow(OCTAVE_SCALE, -o), hw = dreamHW(card.h, card.w, s), h = hw[0], w = hw[1];
         const r = tf.image.resizeBilinear(img, [h, w]); img.dispose(); img = r;
         // One gentle step per octave: sharp start, like the Dreamlings generator (startSteps=0).
         const t0 = performance.now(); const n = dreamStep(img, Math.max(0.01, settings.lr)); img.dispose(); img = n;
@@ -337,6 +367,9 @@ async function zoomRun() {
       card.pathFrame = (card.pathFrame || 0) + 1;
       const off = pathOffset(card.pathFrame, card.w, card.h, settings);
       const z = zoomCrop(cur, settings.zoomFactor, off[0], off[1], settings.sharpen || 0); cur.dispose(); cur = z;
+      if (MODEL.fixedSize && (cur.shape[1] !== MODEL.fixedSize || cur.shape[2] !== MODEL.fixedSize)) {
+        const r = tf.image.resizeBilinear(cur, [MODEL.fixedSize, MODEL.fixedSize]); cur.dispose(); cur = r;
+      }
       const t0 = performance.now();
       for (let i = 0; i < settings.steps; i++) { const n = dreamStep(cur, settings.lr); cur.dispose(); cur = n; }
       await tensorToCanvas(cur, artCv); noteStepTime((performance.now() - t0) / Math.max(1, settings.steps));
@@ -561,6 +594,7 @@ function initControls() {
   $("facing").value = settings.facing;
   $("facing").addEventListener("change", () => { settings.facing = $("facing").value; saveSettings(); startCamera(); });
   $("modelSrc").value = settings.modelSrc;
+  $("engineBtn").addEventListener("click", () => { cycleEngine(); });
   $("modelSrc").addEventListener("change", () => { settings.modelSrc = $("modelSrc").value; ready = false; model = null; saveSettings(); setStatus("Model source: " + (settings.modelSrc === "local" ? "local models/ folder" : "live site") + ". Loads on next shoot."); });
   $("shootBtn").onclick = shootAndDream;
   $("viewBox").onclick = () => { if (!busy && !zooming && card && card.frames.length && $("viewBox").classList.contains("dreaming")) return; shootAndDream(); };
