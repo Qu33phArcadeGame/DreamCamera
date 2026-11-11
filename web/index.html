@@ -75,7 +75,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.10</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.11</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">📷 Camera</button>
@@ -163,7 +163,7 @@
   </div>
   </div>
 
-  <!-- VIDEO TAB: deepdream a whole video (up to 30s) -->
+  <!-- VIDEO TAB: deepdream a whole video (up to 15s) -->
   <div id="videoTab" hidden>
     <div class="square" id="videoBox">
       <video id="vidOut" controls playsinline></video>
@@ -179,9 +179,18 @@
       <div id="videoBar"><i></i></div>
       <div class="grid">
         <label class="full"><b>Video</b>
-          <button class="ghost" id="videoPickBtn" style="width:100%">Choose a video (up to 30s)</button>
+          <button class="ghost" id="videoPickBtn" style="width:100%">Choose a video (up to 15s)</button>
           <input type="file" id="videoIn" accept="video/*" hidden>
           <span class="val" id="videoInfo"></span>
+        </label>
+        <label class="full"><b>Preset</b>
+          <select id="videoPreset">
+            <option value="dreamweave" selected>Dreamweave — living style, woven frames</option>
+            <option value="gentle">Gentle — light dream, every frame on its own</option>
+            <option value="inception">Deep Inception — style zooms and dreams hard</option>
+            <option value="transfer">Photo Transfer — your photo over the video</option>
+          </select>
+          <span class="val">Uses the model, layers and settings from the Camera tab.</span>
         </label>
         <label class="full" id="styleRow"><b>Style photo</b> <span class="val">— the photo the video is painted with</span>
           <button class="ghost" id="stylePickBtn" style="width:100%">Choose a style photo</button>
@@ -202,6 +211,10 @@
           <input type="range" id="videoSteps" min="1" max="4" step="1" value="2"></label>
         <label id="mixRow"><b>Style mix <span class="val" id="videoMixVal">0.50</span></b>
           <input type="range" id="videoMix" min="0" max="1" step="0.05" value="0.5"></label>
+        <label id="weaveRow"><b>Weave <span class="val" id="videoWeaveVal">0.30</span></b>
+          <input type="range" id="videoWeave" min="0" max="0.6" step="0.05" value="0.3"></label>
+        <label class="full"><b>Zoom in while dreaming</b>
+          <select id="videoZoom"><option value="1" selected>On · the video slowly zooms as it dreams</option><option value="0">Off · framing stays put</option></select></label>
       </div>
       <div id="videoStatus">Pick a video to begin.</div>
       <div class="row">
