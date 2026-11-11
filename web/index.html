@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="icon" href="dream-eye-camera.png">
 <title>DreamCamera</title>
 <style>
   *{box-sizing:border-box}
@@ -10,7 +11,8 @@
   body{margin:0;background:#070213;color:#efeaff;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column;overflow:hidden;
     background-image:radial-gradient(600px 300px at 15% -5%,rgba(255,47,214,.22),transparent 70%),radial-gradient(600px 300px at 90% 110%,rgba(0,229,255,.18),transparent 70%)}
   header{padding:10px 14px 4px;display:flex;justify-content:space-between;align-items:baseline;flex-shrink:0}
-  header h1{font-size:18px;margin:0;letter-spacing:.5px;color:#ff2fd6;text-shadow:0 0 12px rgba(255,47,214,.7),0 0 30px rgba(0,229,255,.35)}
+  header h1{font-size:18px;margin:0;letter-spacing:.5px;color:#ff2fd6;text-shadow:0 0 12px rgba(255,47,214,.7),0 0 30px rgba(0,229,255,.35);display:flex;align-items:center;gap:8px}
+  header h1 img{width:30px;height:30px;border-radius:8px}
   header span{font-size:12px;opacity:.7;color:#7df9ff}
   main{max-width:560px;width:100%;margin:0 auto;padding:0 10px;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
   .square{position:relative;width:100%;aspect-ratio:1/1;background:#000;border-radius:14px;overflow:hidden;border:1px solid rgba(255,47,214,.55);box-shadow:0 0 22px rgba(255,47,214,.30),0 0 44px rgba(0,229,255,.12);flex-shrink:0;touch-action:none}
@@ -45,6 +47,13 @@
   #status.err{color:#ff7b7b}
   #bar{height:8px;background:rgba(0,229,255,.12);border-radius:4px;overflow:hidden;visibility:hidden;margin-top:6px}
   #bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#ff2fd6,#00e5ff);box-shadow:0 0 10px rgba(0,229,255,.7)}
+  #videoBar{height:8px;background:rgba(0,229,255,.12);border-radius:4px;overflow:hidden;visibility:hidden;margin-top:6px}
+  #videoBar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#ff2fd6,#00e5ff);box-shadow:0 0 10px rgba(0,229,255,.7)}
+  .tabs{display:flex;gap:8px;margin:8px 0 10px;flex-shrink:0}
+  .tab{flex:1;padding:9px;border-radius:10px;font-size:15px}
+  .tab.on{background:linear-gradient(135deg,#ff2fd6,#7b2fff 55%,#00e5ff);box-shadow:0 0 14px rgba(255,47,214,.5)}
+  #videoStatus{font-size:13px;min-height:18px;margin-top:10px;color:#7df9ff}
+  #videoBox video{object-fit:contain}
   #estimate{font-size:12px;opacity:.7;margin-top:4px}
   #scrollArea{flex:1;min-height:0;overflow-y:auto;padding-bottom:40px;-webkit-overflow-scrolling:touch}
   #gallery{margin-top:14px}
@@ -60,8 +69,13 @@
 </style>
 </head>
 <body>
-<header><h1>📷 DreamCamera</h1><span>deepdream camera · v1.7</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.8</span></header>
 <main>
+  <div class="tabs">
+    <button class="tab on" id="tabCamera">📷 Camera</button>
+    <button class="tab" id="tabVideo">🎬 Video</button>
+  </div>
+  <div id="cameraTab">
   <!-- TOP SQUARE: viewfinder. Plain: nothing drawn over the picture. Tap = shutter. -->
   <div class="square" id="viewBox" title="Tap to shoot">
     <video id="vid" autoplay muted playsinline disablepictureinpicture></video>
@@ -115,7 +129,7 @@
       <label><b>Octaves <span class="val" id="octavesVal"></span></b>
         <input type="range" id="octaves" min="1" max="3" step="1"></label>
       <label><b>Jitter <span class="val" id="jitterVal"></span></b>
-        <input type="range" id="jitter" min="0" max="32" step="1"></label>
+        <input type="range" id="jitter" min="0" max="48" step="1"></label>
       <label><b>Camera</b>
         <select id="facing"><option value="environment">Back</option><option value="user">Front</option></select></label>
       <label><b>Model source</b>
@@ -140,6 +154,55 @@
     <h2>Gallery</h2>
     <div class="tiles" id="tiles"><div class="empty">Nothing yet. Shoot a photo and dream it.</div></div>
   </section>
+  </div>
+  </div>
+
+  <!-- VIDEO TAB: deepdream a whole video (up to 30s) -->
+  <div id="videoTab" hidden>
+    <div class="square" id="videoBox">
+      <video id="vidOut" controls playsinline></video>
+      <div class="hint" id="videoHint">Dreamed video plays here</div>
+    </div>
+    <div id="videoScroll" style="flex:1;min-height:0;overflow-y:auto;padding-bottom:40px;-webkit-overflow-scrolling:touch">
+    <section class="panel" aria-label="Video dream">
+      <h2>Video Dream</h2>
+      <div class="row" style="margin-top:0;margin-bottom:10px">
+        <button class="big" id="videoDreamBtn">🎬 Dream this video</button>
+        <button class="ghost" id="videoStopBtn" disabled>Stop</button>
+      </div>
+      <div id="videoBar"><i></i></div>
+      <div class="grid">
+        <label class="full"><b>Video</b>
+          <button class="ghost" id="videoPickBtn" style="width:100%">Choose a video (up to 30s)</button>
+          <input type="file" id="videoIn" accept="video/*" hidden>
+          <span class="val" id="videoInfo"></span>
+        </label>
+        <label class="full" id="styleRow"><b>Style photo</b> <span class="val">— the photo the video is painted with</span>
+          <button class="ghost" id="stylePickBtn" style="width:100%">Choose a style photo</button>
+          <input type="file" id="styleIn" accept="image/*" hidden>
+          <span class="val" id="styleInfo"></span>
+        </label>
+        <label class="full"><b>Mode</b>
+          <select id="videoMode">
+            <option value="frame">Frame Dream — dream every frame, stitch it back</option>
+            <option value="transfer">Photo Transfer — a photo becomes the dream overlay</option>
+            <option value="dreamweave" selected>Dreamweave — the style dreams while the video plays</option>
+          </select>
+          <span class="val" id="videoModeNote"></span>
+        </label>
+        <label><b>Process fps</b>
+          <select id="videoFps"><option value="8">8 fps</option><option value="12" selected>12 fps</option><option value="16">16 fps</option></select></label>
+        <label><b>Steps / frame <span class="val" id="videoStepsVal">2</span></b>
+          <input type="range" id="videoSteps" min="1" max="4" step="1" value="2"></label>
+        <label id="mixRow"><b>Style mix <span class="val" id="videoMixVal">0.50</span></b>
+          <input type="range" id="videoMix" min="0" max="1" step="0.05" value="0.5"></label>
+      </div>
+      <div id="videoStatus">Pick a video to begin.</div>
+      <div class="row">
+        <button class="ghost" id="videoSaveBtn" disabled>Save video</button>
+      </div>
+    </section>
+    </div>
   </div>
 </main>
 <script src="tfjs/tf.min.js"></script>
