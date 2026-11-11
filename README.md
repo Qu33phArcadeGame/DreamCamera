@@ -1,4 +1,4 @@
-# DreamCamera v1.6
+# DreamCamera v1.7
 
 Deepdream camera. Nothing else. No dreamlings, no game, no coins.
 
@@ -41,6 +41,8 @@ v1.4: home screen widgets (Android app only) — DreamCamera 2x2 shows your late
 v1.5: three new models, all gradient-verified real — VGG19 (80 MB), ResNet50 (103 MB, fixed 224), EfficientNetB0 (21 MB) — all bundled in the APK (~300 MB total). Upload a photo now works in the APK (the WebView opens a photo picker). The footer text is gone. The camera video can no longer pop out into a floating window. InceptionResNetV2 + DenseNet121 still have no hosted TF.js copy — Keras conversion in progress.
 
 v1.6: the last two models, converted from Keras weights and gradient-verified — DenseNet121 (32 MB, new torch preprocessing) and InceptionResNetV2 (214 MB, graph model, fixed 299 — its layers version cannot load in TF.js). All 11 models real and bundled in the APK (~535 MB total).
+
+v1.7: long runs stay clean — the zoom now caps at 3x total magnification and the dream strength eases off as the run goes on, so it no longer turns into a grid of boxes past 50 frames. Higher resolutions (Ultra 768, Max 1024), photo ratios (1:1, 9:16, 16:9), progress bar moved below the Shoot button, subtle holographic buttons, 46 presets (4+ per model), and the model notes cleaned up.
 
 ## DSi
 
