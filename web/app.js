@@ -1,4 +1,4 @@
-// DreamCamera v1.7 — deepdream camera. Web app.
+// DreamCamera v1.8 — deepdream camera. Web app.
 // Gradient-ascent dream engine: MODELS registry, PRE pixel math,
 // dreamStep, zoomCrop + path offsets, octave start-dream, engine fallback.
 // Photo ratios 1:1, 9:16, 16:9. 50 frames per run, IndexedDB gallery, MediaRecorder video.
@@ -91,7 +91,7 @@ const PRESETS = [
   { m: "v2", name: "Woods noise", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 8, lr: 0.04, sharpen: 0.35, layers: ["InceptionV2/InceptionV2/Mixed_4d/concat"] } },
   { m: "v2", name: "Wave trip", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["InceptionV2/InceptionV2/Mixed_4c/concat", "InceptionV2/InceptionV2/Mixed_4d/concat"] } },
   { m: "v3", name: "Fur storm", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 12, lr: 0.05, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["mixed6", "mixed7"] } },
-  { m: "v3", name: "Silk road", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["mixed2", "mixed3"] } },
+  { m: "v3", name: "Velvet fur", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["mixed2", "mixed3"] } },
   { m: "vgg16", name: "Petal storm", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["block3_conv3"] } },
   { m: "vgg16", name: "Deep kelp", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["block4_conv3"] } },
   { m: "vgg16", name: "Ghost garden", s: { path: "straight", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.04, sharpen: 0.3, layers: ["block5_conv3"] } },
@@ -130,7 +130,7 @@ const PRESETS = [
   { m: "inceptionresnetv2", name: "IRv2 wave", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block17_18_ac/Relu"] } },
   { m: "inceptionresnetv2", name: "IRv2 bloom", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 12, lr: 0.05, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu"] } },
 ];
-const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 16, facing: "environment", modelSrc: "live" };
+const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live" };
 
 // ===== STATE =====
 const vid = $("vid"), artCv = $("artCv");
@@ -189,13 +189,10 @@ function applyRatio() {
 }
 function clampFps(v) { v = parseFloat(v); if (!(v > 0)) v = 12; return Math.max(2, Math.min(30, v)); }
 function cardFps() { return clampFps(settings.playFps); }
-// The size to feed the model at one octave. A fixed-size model
-// (MobileNetV2, MobileNetV1, ResNet50) takes exactly its fixed size at
-// every octave — feeding it anything else throws the shape
-// error (284x284 into a 224x224 model). Other models take the
-// octave-scaled size, floored at minSize.
+// The size to feed the model at one octave. Aspect is always preserved —
+// the octave just scales the photo down. A fixed-size model takes its
+// square inside dreamSteps (letterboxed), never by squeezing the photo.
 function dreamHW(h, w, s) {
-  if (MODEL.fixedSize) return [MODEL.fixedSize, MODEL.fixedSize];
   return [Math.max(MODEL.minSize || 96, Math.round(h * s)),
           Math.max(MODEL.minSize || 96, Math.round(w * s))];
 }
@@ -352,6 +349,46 @@ function getGrad() {
   });
 }
 function roll(t, shift, axis) { const n = t.shape[axis]; shift = ((shift % n) + n) % n; if (!shift) return t; const p = tf.split(t, [n - shift, shift], axis); return tf.concat([p[1], p[0]], axis); }
+// De-grid: the grid is a high-frequency checkerboard the network builds
+// up frame after frame. Blending a little of a blurred copy back in each
+// frame keeps it from compounding, without softening the dream.
+function degrid(img, amt) {
+  return tf.tidy(() => {
+    const k = [1, 2, 1, 2, 4, 2, 1, 2, 1].map(v => v / 16), ker = tf.tensor4d([].concat(...k.map(v => [v, v, v])), [3, 3, 3, 1]);
+    const blur = tf.depthwiseConv2d(img, ker, 1, "same");
+    return img.mul(1 - amt).add(blur.mul(amt)).clipByValue(P.lo, P.hi);
+  });
+}
+// Dream `steps` steps on img and return the new tensor (img is disposed).
+// The aspect ratio and framing never change: for a fixed-size model the
+// image is letterboxed into the model's square, dreamed there, and
+// un-letterboxed back — never squeezed into a square and never
+// cover-cropped, so the dream starts exactly where the photo is.
+function dreamSteps(img, lr, steps, doDegrid) {
+  if (!MODEL.fixedSize) {
+    let cur = img;
+    for (let i = 0; i < steps; i++) { const n = dreamStep(cur, lr); cur.dispose(); cur = n; }
+    if (doDegrid) { const d = degrid(cur, 0.10); cur.dispose(); cur = d; }
+    return cur;
+  }
+  const S = MODEL.fixedSize, h = img.shape[1], w = img.shape[2];
+  const scale = S / Math.max(h, w);
+  const nh = Math.max(1, Math.round(h * scale)), nw = Math.max(1, Math.round(w * scale));
+  const top = Math.floor((S - nh) / 2), left = Math.floor((S - nw) / 2);
+  let sq = tf.tidy(() => {
+    const r = tf.image.resizeBilinear(img, [nh, nw]);
+    return tf.pad(r, [[0, 0], [top, S - nh - top], [left, S - nw - left], [0, 0]], P.lo);
+  });
+  img.dispose();
+  for (let i = 0; i < steps; i++) { const n = dreamStep(sq, lr); sq.dispose(); sq = n; }
+  if (doDegrid) { const d = degrid(sq, 0.10); sq.dispose(); sq = d; }
+  const out = tf.tidy(() => {
+    const c = sq.slice([0, top, left, 0], [1, nh, nw, 3]);
+    return tf.image.resizeBilinear(c, [h, w]);
+  });
+  sq.dispose();
+  return out;
+}
 function dreamStep(img, lr) {
   return tf.tidy(() => {
     const sy = Math.floor((Math.random() * 2 - 1) * JITTER), sx = Math.floor((Math.random() * 2 - 1) * JITTER);
@@ -461,7 +498,7 @@ async function startDream() {
         const s = Math.pow(OCTAVE_SCALE, -o), hw = dreamHW(card.h, card.w, s), h = hw[0], w = hw[1];
         const r = tf.image.resizeBilinear(img, [h, w]); img.dispose(); img = r;
         // One gentle step per octave: sharp start, like the Dreamlings generator (startSteps=0).
-        const t0 = performance.now(); const n = dreamStep(img, Math.max(0.01, settings.lr)); img.dispose(); img = n;
+        const t0 = performance.now(); img = dreamSteps(img, Math.max(0.01, settings.lr), 1, false);
         if (o === 0) noteStepTime(performance.now() - t0);
         setStatus("Dreaming… detail layer " + (octaves - o) + " of " + octaves); setBar((octaves - o) / total);
         if (o === 0) await tensorToCanvas(img, artCv); else await tf.nextFrame();
@@ -506,12 +543,9 @@ async function zoomRun() {
       else if (card.zoomTotal / zf > ZOOM_CAP) zf = card.zoomTotal / ZOOM_CAP;
       card.zoomTotal = card.zoomTotal / zf;
       const z = zoomCrop(cur, zf, off[0], off[1], (settings.sharpen || 0) / (1 + card.frames.length * 0.01)); cur.dispose(); cur = z;
-      if (MODEL.fixedSize && (cur.shape[1] !== MODEL.fixedSize || cur.shape[2] !== MODEL.fixedSize)) {
-        const r = tf.image.resizeBilinear(cur, [MODEL.fixedSize, MODEL.fixedSize]); cur.dispose(); cur = r;
-      }
       const t0 = performance.now();
       const lrEff = settings.lr / (1 + card.frames.length * 0.012);   // gentler as the run goes on
-      for (let i = 0; i < settings.steps; i++) { const n = dreamStep(cur, lrEff); cur.dispose(); cur = n; }
+      cur = dreamSteps(cur, lrEff, settings.steps, true);   // wash the grid out a little every frame
       await tensorToCanvas(cur, artCv); noteStepTime((performance.now() - t0) / Math.max(1, settings.steps));
       await pushFrame(); made++;
       setStatus("Zooming… frame " + made + " of " + want + " (" + card.frames.length + " total)"); setBar(made / want);
@@ -814,6 +848,174 @@ function initControls() {
   });
 }
 
+// ===== VIDEO TAB =====
+// Deepdream a whole video (up to 30s). Three modes:
+//  Frame Dream — dream every frame, stitch it back together.
+//  Photo Transfer — a photo becomes the dream overlay on the video.
+//  Dreamweave — the style photo is dreamed live while the video plays,
+//  so the style itself comes alive, and each frame is woven out of the
+//  one before it (carryover), so it flows instead of flickering.
+let videoSrc = null, videoMeta = null, styleImg = null;
+let videoRunning = false, videoOutBlob = null, videoOutUrl = null;
+function setVideoStatus(t, err) { const el = $("videoStatus"); el.textContent = t; el.style.color = err ? "#ff7b7b" : "#7df9ff"; }
+function setVideoBar(p) { const b = $("videoBar"); if (p == null) { b.style.visibility = "hidden"; return; } b.style.visibility = "visible"; b.firstChild.style.width = Math.round(Math.max(0, Math.min(1, p)) * 100) + "%"; }
+function videoDims(vw, vh) {
+  const q = QUALITY[settings.quality] || QUALITY.normal;   // short side = quality
+  const short = q.w;
+  if (vw >= vh) return { w: Math.round(short * vw / vh), h: short };
+  return { w: short, h: Math.round(short * vh / vw) };
+}
+function switchTab(name) {
+  const cam = name === "camera";
+  $("cameraTab").hidden = !cam;
+  $("videoTab").hidden = cam;
+  $("tabCamera").classList.toggle("on", cam);
+  $("tabVideo").classList.toggle("on", !cam);
+  if (cam) applyRatio();
+}
+function videoModeNote() {
+  const m = $("videoMode").value;
+  const notes = {
+    frame: "Every frame is dreamed on its own, then stitched back into a video.",
+    transfer: "Your photo is dreamed once, then laid over every frame like a living texture.",
+    dreamweave: "The style photo is dreamed live as the video plays, so the style itself grows — and each frame is woven out of the last, so it flows without flicker."
+  };
+  $("videoModeNote").textContent = notes[m] || "";
+  const needStyle = m !== "frame";
+  $("styleRow").style.display = needStyle ? "" : "none";
+  $("mixRow").style.display = needStyle ? "" : "none";
+}
+function updateVideoUI() {
+  $("videoDreamBtn").disabled = videoRunning || !videoMeta;
+  $("videoStopBtn").disabled = !videoRunning;
+  $("videoSaveBtn").disabled = !videoOutBlob || videoRunning;
+}
+// Dream the style photo into a texture tensor at (w,h). The aspect is
+// preserved — dreamSteps letterboxes a fixed-size model, never squeezes.
+async function makeStyleTexture(w, h) {
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const target = w / h;
+  let sw = styleImg.naturalWidth, sh = styleImg.naturalHeight;
+  if (sw / sh > target) sw = sh * target; else sh = sw / target;
+  c.getContext("2d").drawImage(styleImg, (styleImg.naturalWidth - sw) / 2, (styleImg.naturalHeight - sh) / 2, sw, sh, 0, 0, w, h);
+  let t = canvasToTensor(c);
+  t = dreamSteps(t, settings.lr, 8, false);
+  return t;
+}
+function seekTo(v, t) {
+  return new Promise(res => { v.onseeked = () => res(); v.currentTime = t; });
+}
+async function processVideo() {
+  if (videoRunning || !videoMeta) return;
+  const mode = $("videoMode").value;
+  if (mode !== "frame" && !styleImg) { setVideoStatus("Pick a style photo first.", true); return; }
+  if (!await ensureReady()) return;
+  videoRunning = true; updateVideoUI();
+  const src = document.createElement("video");
+  src.muted = true; src.playsInline = true; src.preload = "auto"; src.src = videoSrc;
+  try { await new Promise((res, rej) => { src.onloadedmetadata = res; src.onerror = () => rej(new Error("could not read that video")); }); }
+  catch (e) { setVideoStatus("Could not read that video.", true); videoRunning = false; updateVideoUI(); return; }
+  const dur = Math.min(30, src.duration || 0);
+  const fps = parseInt($("videoFps").value, 10) || 12;
+  const total = Math.max(1, Math.floor(dur * fps));
+  const vd = videoDims(src.videoWidth, src.videoHeight);
+  const inCv = document.createElement("canvas"); inCv.width = vd.w; inCv.height = vd.h;
+  const outCv = document.createElement("canvas"); outCv.width = vd.w; outCv.height = vd.h;
+  let styleT = null;
+  if (mode !== "frame") { setVideoStatus("Dreaming the style photo…"); styleT = await makeStyleTexture(vd.w, vd.h); }
+  const stream = outCv.captureStream(fps);
+  const mime = videoMime();
+  const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8000000 } : { videoBitsPerSecond: 8000000 });
+  const chunks = []; rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  const done = new Promise(r => rec.onstop = r);
+  rec.start(200);
+  let prev = null;
+  try {
+    for (let i = 0; i < total && videoRunning; i++) {
+      await seekTo(src, Math.min(i / fps, Math.max(0, dur - 0.001)));
+      inCv.getContext("2d").drawImage(src, 0, 0, vd.w, vd.h);
+      let cur = canvasToTensor(inCv);
+      if (mode === "dreamweave" && prev) {
+        const w = tf.tidy(() => cur.mul(0.7).add(prev.mul(0.3)));   // weave: carry the last frame forward
+        cur.dispose(); cur = w;
+      }
+      if (mode !== "frame" && styleT) {
+        if (mode === "dreamweave" && i % 6 === 0) {   // the style itself dreams, twice a second
+          styleT = dreamSteps(styleT, settings.lr, 1, false);
+        }
+        const mix = parseFloat($("videoMix").value) || 0.5;
+        const b = tf.tidy(() => cur.mul(1 - mix).add(styleT.mul(mix)));
+        cur.dispose(); cur = b;
+      }
+      const steps = parseInt($("videoSteps").value, 10) || 2;
+      cur = dreamSteps(cur, settings.lr, steps, true);
+      await tensorToCanvas(cur, outCv);
+      if (prev) prev.dispose();
+      prev = cur;
+      setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total);
+      setVideoBar((i + 1) / total);
+      await sleep(1000 / fps);   // let the recorder capture this frame
+      await tf.nextFrame();
+    }
+  } catch (e) {
+    console.error(e);
+    setVideoStatus("Video dream failed: " + (e && e.message || e), true);
+  }
+  rec.stop(); await done;
+  if (prev) { prev.dispose(); prev = null; }
+  if (styleT) { styleT.dispose(); styleT = null; }
+  videoRunning = false;
+  videoOutBlob = new Blob(chunks, { type: mime || "video/webm" });
+  if (videoOutUrl) URL.revokeObjectURL(videoOutUrl);
+  videoOutUrl = URL.createObjectURL(videoOutBlob);
+  $("vidOut").src = videoOutUrl;
+  $("videoHint").textContent = "";
+  if (videoOutBlob.size) setVideoStatus("Done — " + total + " frames. Watch it above, or save it.");
+  setVideoBar(null);
+  updateVideoUI();
+}
+function initVideoTab() {
+  $("tabCamera").onclick = () => switchTab("camera");
+  $("tabVideo").onclick = () => switchTab("video");
+  $("videoMode").addEventListener("change", videoModeNote);
+  videoModeNote();
+  $("videoSteps").addEventListener("input", () => { $("videoStepsVal").textContent = $("videoSteps").value; });
+  $("videoMix").addEventListener("input", () => { $("videoMixVal").textContent = (+$("videoMix").value).toFixed(2); });
+  $("videoPickBtn").onclick = () => $("videoIn").click();
+  $("videoIn").addEventListener("change", () => {
+    const f = $("videoIn").files[0]; if (!f) return;
+    if (videoSrc) URL.revokeObjectURL(videoSrc);
+    videoSrc = URL.createObjectURL(f);
+    const v = document.createElement("video");
+    v.preload = "metadata"; v.src = videoSrc;
+    v.onloadedmetadata = () => {
+      const d = v.duration || 0;
+      videoMeta = { duration: d, width: v.videoWidth, height: v.videoHeight };
+      $("videoInfo").textContent = f.name + " · " + d.toFixed(1) + "s" + (d > 30 ? " (first 30s used)" : "") + " · " + v.videoWidth + "×" + v.videoHeight;
+      setVideoStatus(d > 30 ? "That video is over 30s — only the first 30s will be dreamed." : "Video ready. Pick a mode and dream it.");
+      updateVideoUI();
+    };
+    v.onerror = () => { setVideoStatus("Could not read that video.", true); videoMeta = null; updateVideoUI(); };
+  });
+  $("stylePickBtn").onclick = () => $("styleIn").click();
+  $("styleIn").addEventListener("change", () => {
+    const f = $("styleIn").files[0]; if (!f) return;
+    const url = URL.createObjectURL(f), im = new Image();
+    im.onload = () => { styleImg = im; $("styleInfo").textContent = f.name + " · " + im.naturalWidth + "×" + im.naturalHeight; URL.revokeObjectURL(url); };
+    im.onerror = () => { setVideoStatus("Could not read that photo.", true); };
+    im.src = url;
+  });
+  $("videoDreamBtn").onclick = processVideo;
+  $("videoStopBtn").onclick = () => { videoRunning = false; setVideoStatus("Stopping…"); };
+  $("videoSaveBtn").onclick = () => {
+    if (!videoOutBlob) return;
+    const ext = (videoOutBlob.type || "").includes("mp4") ? "mp4" : "webm";
+    downloadBlob(videoOutBlob, "dreamcamera-video-" + Date.now().toString(36) + "." + ext);
+    setVideoStatus("Video saved.");
+  };
+  updateVideoUI();
+}
+
 // ===== BOOT =====
 buildModelSelect();
 buildLayers();
@@ -821,6 +1023,7 @@ buildPresets();
 if (settings.preset != null && PRESETS[settings.preset] && PRESETS[settings.preset].m === MODEL.short) applyPreset(settings.preset);
 syncControls();
 initControls();
+initVideoTab();
 updateUI();
 renderGallery();
 startCamera();
