@@ -1,4 +1,4 @@
-# DreamCamera v1.11
+# DreamCamera v1.12
 
 Deepdream camera. Nothing else. No dreamlings, no game, no coins.
 
@@ -43,6 +43,8 @@ v1.5: three new models, all gradient-verified real — VGG19 (80 MB), ResNet50 (
 v1.6: the last two models, converted from Keras weights and gradient-verified — DenseNet121 (32 MB, new torch preprocessing) and InceptionResNetV2 (214 MB, graph model, fixed 299 — its layers version cannot load in TF.js). All 11 models real and bundled in the APK (~535 MB total).
 
 v1.7: long runs stay clean — the zoom now caps at 3x total magnification and the dream strength eases off as the run goes on, so it no longer turns into a grid of boxes past 50 frames. Higher resolutions (Ultra 768, Max 1024), photo ratios (1:1, 9:16, 16:9), progress bar moved below the Shoot button, subtle holographic buttons, 46 presets (4+ per model), and the model notes cleaned up.
+
+v1.12: fixed glitchy saved videos — the recorder was capturing in real time while each frame takes seconds to dream, so it recorded dozens of duplicate frames per dreamed frame and the video came out minutes long, choppy and glitchy. It now captures exactly one frame per dreamed frame (captureStream(0) + requestFrame), so saved videos are the right length and smooth — this covers both the Video tab and the still Save video button. Way more presets: 82 camera presets now (was 46) — v1 12, v2 10, v3 8, VGG16 8, MobileNetV2 7, MobileNetV1 7, VGG19 6, ResNet50 6, EfficientNetB0 6, DenseNet121 6, InceptionResNetV2 6 — every layer reference verified against the model; plus 4 new video presets (Slow Burn, Weave Light, Transfer Deep, Hyper Weave) for 8 total.
 
 v1.11: the video Save button now works in the app — the WebView ignores the download attribute, so the page hands the file to the app, which saves it into Downloads (this also fixes the still photo/video Save buttons, which had the same bug). Videos are now capped at 15s (was 30s). Dreamweave goes deeper: the style photo now zooms in and dreams along with the video (extra inception), instead of staying a static overlay. More Video tab options: a Preset picker (Gentle / Dreamweave / Deep Inception / Photo Transfer), a Weave slider for how much of the last frame carries over, and a "Zoom in while dreaming" toggle for the video itself.
 
