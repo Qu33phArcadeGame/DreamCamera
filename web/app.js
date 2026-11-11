@@ -404,7 +404,7 @@ function dreamSteps(img, lr, steps, doDegrid) {
   if (!MODEL.fixedSize) {
     let cur = img;
     for (let i = 0; i < steps; i++) { const n = dreamStep(cur, lr); cur.dispose(); cur = n; }
-    if (doDegrid) { const d = degrid(cur, 0.10); cur.dispose(); cur = d; }
+    if (doDegrid) { const d = degrid(cur, 0.05); cur.dispose(); cur = d; }
     return cur;
   }
   const S = MODEL.fixedSize, h = img.shape[1], w = img.shape[2];
@@ -417,7 +417,7 @@ function dreamSteps(img, lr, steps, doDegrid) {
   });
   img.dispose();
   for (let i = 0; i < steps; i++) { const n = dreamStep(sq, lr); sq.dispose(); sq = n; }
-  if (doDegrid) { const d = degrid(sq, 0.10); sq.dispose(); sq = d; }
+  if (doDegrid) { const d = degrid(sq, 0.05); sq.dispose(); sq = d; }
   const out = tf.tidy(() => {
     const c = sq.slice([0, top, left, 0], [1, nh, nw, 3]);
     return tf.image.resizeBilinear(c, [h, w]);
@@ -628,21 +628,33 @@ async function exportVideo() {
   busy = true; updateUI();
   try {
     const mime = videoMime(), L = seqLength(), fpsIn = cardFps(), fpsOut = cardFpsOut();
-    // One frame per drawn frame (see processVideo): a live captureStream
-    // records duplicates while each frame is drawn slowly, and the saved
-    // video comes out long, choppy and glitchy.
-    const probeStream = artCv.captureStream(0);
+    // Record the dream area as it plays (zoom in, then back out) and spit
+    // it out as an MP4. The frames are drawn to a dedicated export canvas
+    // at up to 720p (the card itself is small, e.g. Turbo 192, so recording
+    // it 1:1 makes a tiny blurry file) and to the viewfinder too, so you
+    // watch it record. One frame per draw, via requestFrame, so the video
+    // is the right length and smooth — never a live capture, which records
+    // duplicates while frames are drawn slowly and comes out glitchy.
+    const exScale = Math.max(1, Math.min(2, 720 / Math.max(card.w, card.h)));
+    const exCv = document.createElement("canvas");
+    exCv.width = Math.round(card.w * exScale); exCv.height = Math.round(card.h * exScale);
+    const exCtx = exCv.getContext("2d"); exCtx.imageSmoothingEnabled = true; exCtx.imageSmoothingQuality = "high";
+    const probeStream = exCv.captureStream(0);
     const vtrack = probeStream.getVideoTracks()[0];
     const manualFrames = !!(vtrack && typeof vtrack.requestFrame === "function");
-    const stream2 = manualFrames ? probeStream : artCv.captureStream(30);
-    const rec = new MediaRecorder(stream2, mime ? { mimeType: mime, videoBitsPerSecond: 5000000 } : { videoBitsPerSecond: 5000000 });
+    const stream2 = manualFrames ? probeStream : exCv.captureStream(30);
+    const rec = new MediaRecorder(stream2, mime ? { mimeType: mime, videoBitsPerSecond: 10000000 } : { videoBitsPerSecond: 10000000 });
     const chunks = []; rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     const done = new Promise(r => rec.onstop = r);
     rec.start(200);
     for (let i = 0; i < L; i++) {
       const fi = seqFrame(i), leg = seqLeg(i), fps = leg ? fpsOut : fpsIn;
       const im = await decodeBlob(card.frames[fi]);
-      if (im) { const c = artCv.getContext("2d"); c.clearRect(0, 0, card.w, card.h); c.drawImage(im, 0, 0, card.w, card.h); if (im.close) im.close(); }
+      if (im) {
+        const c = artCv.getContext("2d"); c.clearRect(0, 0, card.w, card.h); c.drawImage(im, 0, 0, card.w, card.h);
+        exCtx.clearRect(0, 0, exCv.width, exCv.height); exCtx.drawImage(im, 0, 0, exCv.width, exCv.height);
+        if (im.close) im.close();
+      }
       setStatus("Recording video… " + (i + 1) + " / " + L); setBar((i + 1) / L);
       if (manualFrames) { vtrack.requestFrame(); await sleep(60); }
       else await sleep(1000 / fps);
