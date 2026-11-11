@@ -1,8 +1,7 @@
-// DreamCamera v1.6 — deepdream camera. Web app.
-// Dream engine ported from the Dreamlings generator (generator.html):
-// same MODELS registry shape, PRE pixel math, gradient-ascent dreamStep,
-// zoomCrop + path offsets, octave start-dream, engine fallback.
-// Square format, 50 frames per run, IndexedDB gallery, MediaRecorder video.
+// DreamCamera v1.7 — deepdream camera. Web app.
+// Gradient-ascent dream engine: MODELS registry, PRE pixel math,
+// dreamStep, zoomCrop + path offsets, octave start-dream, engine fallback.
+// Photo ratios 1:1, 9:16, 16:9. 50 frames per run, IndexedDB gallery, MediaRecorder video.
 // Camera only. No dreamlings, no game.
 "use strict";
 const $ = id => document.getElementById(id);
@@ -28,37 +27,37 @@ const LIVE_BASE = "https://qu33pharcadegame.github.io/DeepdreamlingsFusion/model
 const MODELS = {
   v1: { short: "v1", label: "Inception v1", kind: "graph", live: LIVE_BASE + "inceptionv1/model.json", local: "models/inceptionv1/model.json", pre: "v1",
     layers: ["mixed3a", "mixed3b", "mixed4a", "mixed4b", "mixed4c", "mixed4d", "mixed4e", "mixed5a", "mixed5b"],
-    pref: ["mixed4c", "mixed4d"], note: "The 2015 classic. Mid layers make eyes and creatures." },
+    pref: ["mixed4c", "mixed4d"], note: "Mid layers make eyes and creatures." },
   v2: { short: "v2", label: "Inception v2", kind: "graph", live: LIVE_BASE + "inceptionv2/model.json", local: "models/inceptionv2/model.json", pre: "v2",
     layers: ["InceptionV2/InceptionV2/Mixed_3b/concat", "InceptionV2/InceptionV2/Mixed_3c/concat", "InceptionV2/InceptionV2/Mixed_4a/concat", "InceptionV2/InceptionV2/Mixed_4b/concat", "InceptionV2/InceptionV2/Mixed_4c/concat", "InceptionV2/InceptionV2/Mixed_4d/concat", "InceptionV2/InceptionV2/Mixed_4e/concat", "InceptionV2/InceptionV2/Mixed_5a/concat", "InceptionV2/InceptionV2/Mixed_5b/concat", "InceptionV2/InceptionV2/Mixed_5c/concat"],
-    pref: ["InceptionV2/InceptionV2/Mixed_4d/concat", "InceptionV2/InceptionV2/Mixed_4e/concat"], note: "Noisier than v1, wilder creatures." },
+    pref: ["InceptionV2/InceptionV2/Mixed_4d/concat", "InceptionV2/InceptionV2/Mixed_4e/concat"], note: "Wilder creatures, noisier patterns." },
   v3: { short: "v3", label: "Inception v3", kind: "layers", live: LIVE_BASE + "inceptionv3/model.json", local: "models/inceptionv3/model.json", pre: "v3",
     layers: ["mixed2", "mixed3", "mixed4", "mixed5", "mixed6", "mixed7"],
     pref: ["mixed6", "mixed7"], note: "High layers make fur and creature faces." },
   vgg16: { short: "vgg16", label: "VGG16", kind: "layers", live: LIVE_BASE + "vgg16/model.json", local: "models/vgg16/model.json", pre: "vgg",
     layers: ["block1_conv2", "block2_conv2", "block3_conv3", "block4_conv3", "block5_conv3"],
-    pref: ["block4_conv3"], note: "Painterly swirls; deep blocks make flowing organic shapes. Slowest model." },
+    pref: ["block4_conv3"], note: "Painterly swirls; deep blocks make flowing organic shapes." },
   mobilenetv2: { short: "mobilenetv2", label: "MobileNetV2", kind: "graph", live: "https://storage.googleapis.com/tfjs-models/savedmodel/mobilenet_v2_1.0_224/model.json", local: "models/mobilenetv2/model.json", pre: "v2", trustLayers: true, minSize: 224, fixedSize: 224,
     layers: ["module_apply_default/MobilenetV2/expanded_conv_5/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_7/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_10/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_16/project/BatchNorm/FusedBatchNorm"],
-    pref: ["module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm"], note: "Small and fast. Good first model on a slow phone." },
+    pref: ["module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm"], note: "Small and fast, clean lines." },
   mobilenetv1: { short: "mobilenetv1", label: "MobileNetV1", kind: "layers", live: "https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v1_0.25_224/model.json", local: "models/mobilenetv1/model.json", pre: "v2", minSize: 224, fixedSize: 224,
     layers: ["conv_pw_9_relu", "conv_pw_10_relu", "conv_pw_11_relu", "conv_pw_12_relu", "conv_pw_13_relu"],
-    pref: ["conv_pw_11_relu", "conv_pw_12_relu"], note: "Smallest + fastest. Good first model on a slow phone." },
+    pref: ["conv_pw_11_relu", "conv_pw_12_relu"], note: "Tiny and quick, soft sketchy dreams." },
   vgg19: { short: "vgg19", label: "VGG19", kind: "layers", live: "https://raw.githubusercontent.com/paulsp94/tfjs_vgg19_imagenet/master/model/model.json", local: "models/vgg19/model.json", pre: "vgg",
     layers: ["block3_conv4", "block4_conv4", "block5_conv4"],
-    pref: ["block5_conv4", "block4_conv4"], note: "VGG16's deeper sibling. Painterly swirls, slower." },
+    pref: ["block5_conv4", "block4_conv4"], note: "Painterly swirls, deep and flowing." },
   resnet50: { short: "resnet50", label: "ResNet50", kind: "layers", live: "https://raw.githubusercontent.com/paulsp94/tfjs_resnet_imagenet/master/ResNet50/model.json", local: "models/resnet50/model.json", pre: "vgg", fixedSize: 224,
     layers: ["activation_21", "activation_39"],
-    pref: ["activation_39", "activation_21"], note: "Residual blocks. TF-slim layer names. Fixed 224 input. One of the heaviest models." },
+    pref: ["activation_39", "activation_21"], note: "Deep residual layers, rich texture." },
   efficientnetb0: { short: "efficientnetb0", label: "EfficientNet B0", kind: "graph", live: "https://raw.githubusercontent.com/ntedgi/efficientnet-tensorflowjs-binaries/main/models/B0/model.json", local: "models/efficientnetb0/model.json", pre: "eff", trustLayers: true,
     layers: ["StatefulPartitionedCall/model/stack_2/block_1/add/add", "StatefulPartitionedCall/model/stack_4/block_2/add/add", "StatefulPartitionedCall/model/stack_6/block_0/project_bn/FusedBatchNormV3", "StatefulPartitionedCall/model/top_activation/mul"],
-    pref: ["StatefulPartitionedCall/model/stack_4/block_2/add/add", "StatefulPartitionedCall/model/stack_6/block_0/project_bn/FusedBatchNormV3"], note: "Efficient and sharp. The lightest of the new three." },
+    pref: ["StatefulPartitionedCall/model/stack_4/block_2/add/add", "StatefulPartitionedCall/model/stack_6/block_0/project_bn/FusedBatchNormV3"], note: "Efficient and sharp." },
   densenet121: { short: "densenet121", label: "DenseNet121", kind: "layers", live: "https://raw.githubusercontent.com/Qu33phArcadeGame/DreamCamera/main/web/models/densenet121/model.json", local: "models/densenet121/model.json", pre: "torch", fixedSize: 224,
     layers: ["conv3_block12_concat", "conv4_block24_concat", "conv5_block16_concat"],
-    pref: ["conv4_block24_concat", "conv5_block16_concat"], note: "Dense connections. Sharp, detailed dreams. Converted from Keras." },
+    pref: ["conv4_block24_concat", "conv5_block16_concat"], note: "Dense connections. Sharp, detailed dreams." },
   inceptionresnetv2: { short: "inceptionresnetv2", label: "InceptionResNetV2", kind: "graph", live: "https://raw.githubusercontent.com/Qu33phArcadeGame/DreamCamera/main/web/models/inceptionresnetv2/model.json", local: "models/inceptionresnetv2/model.json", pre: "v2", trustLayers: true, fixedSize: 299,
     layers: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_18_ac/Relu"],
-    pref: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu"], note: "Inception + residual. The biggest model. Fixed 299 input. Converted from Keras." },
+    pref: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu"], note: "Inception + residual. Rich, layered dreams." },
 };
 const COMING_SOON = [];
 // Per-model pixel math (same as the Dreamlings generator).
@@ -75,7 +74,7 @@ const PRE = {
            lo: -2.118, hi: 2.64, noise: [-0.05, 0.05] },   // DenseNet: x/255, then (x-mean)/std per channel (RGB)
 };
 const WASM_PATH = "tfjs/";
-const QUALITY = { turbo: { w: 192, h: 192 }, fast: { w: 256, h: 256 }, normal: { w: 384, h: 384 }, high: { w: 512, h: 512 } };
+const QUALITY = { turbo: { w: 192, h: 192 }, fast: { w: 256, h: 256 }, normal: { w: 384, h: 384 }, high: { w: 512, h: 512 }, ultra: { w: 768, h: 768 }, max: { w: 1024, h: 1024 } };
 const MAX_RUN = 50, TOTAL_MAX = 500;   // 50 frames per run; Continue adds 50 more, up to 500 total
 const OCTAVE_SCALE = 1.35;
 const LABEL = { webgpu: "WebGPU (GPU)", webgl: "WebGL (GPU)", wasm: "WebAssembly (CPU)", cpu: "JavaScript (CPU)" };
@@ -87,7 +86,7 @@ const PRESETS = [
   { m: "v1", name: "Wild dive", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 8, lr: 0.045, sharpen: 0.35, layers: ["mixed4a", "mixed4b"] } },
   { m: "v1", name: "Eye storm", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["mixed4c", "mixed4d"] } },
   { m: "v1", name: "Hound dreams", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 18, lr: 0.055, sharpen: 0.35, layers: ["mixed4d", "mixed4e"] } },
-  { m: "v1", name: "The 2015 classic", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 22, lr: 0.05, sharpen: 0.35, layers: ["mixed4c", "mixed4d", "mixed4e"] } },
+  { m: "v1", name: "First dream", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 22, lr: 0.05, sharpen: 0.35, layers: ["mixed4c", "mixed4d", "mixed4e"] } },
   { m: "v1", name: "Spiral melt", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["mixed4b", "mixed4c"] } },
   { m: "v2", name: "Woods noise", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 8, lr: 0.04, sharpen: 0.35, layers: ["InceptionV2/InceptionV2/Mixed_4d/concat"] } },
   { m: "v2", name: "Wave trip", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["InceptionV2/InceptionV2/Mixed_4c/concat", "InceptionV2/InceptionV2/Mixed_4d/concat"] } },
@@ -109,8 +108,29 @@ const PRESETS = [
   { m: "densenet121", name: "Dense garden", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["conv5_block16_concat", "conv4_block24_concat"] } },
   { m: "inceptionresnetv2", name: "Residual storm", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu"] } },
   { m: "inceptionresnetv2", name: "IRv2 spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu"] } },
+  { m: "v1", name: "Classic wave", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["mixed4a", "mixed4c"] } },
+  { m: "v2", name: "Woods swirl", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["InceptionV2/InceptionV2/Mixed_4e/concat"] } },
+  { m: "v2", name: "Deep woods", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 12, lr: 0.045, sharpen: 0.35, layers: ["InceptionV2/InceptionV2/Mixed_5a/concat", "InceptionV2/InceptionV2/Mixed_5b/concat"] } },
+  { m: "v3", name: "Fur drift", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["mixed4", "mixed5"] } },
+  { m: "v3", name: "Silk spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["mixed7"] } },
+  { m: "vgg16", name: "Kelp spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["block5_conv3"] } },
+  { m: "mobilenetv2", name: "Pocket wave", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["module_apply_default/MobilenetV2/expanded_conv_7/project/BatchNorm/FusedBatchNorm"] } },
+  { m: "mobilenetv2", name: "Quick bloom", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["module_apply_default/MobilenetV2/expanded_conv_16/project/BatchNorm/FusedBatchNorm"] } },
+  { m: "mobilenetv1", name: "Tiny swirl", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["conv_pw_10_relu", "conv_pw_11_relu"] } },
+  { m: "mobilenetv1", name: "Tiny wave", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["conv_pw_9_relu"] } },
+  { m: "mobilenetv1", name: "Pocket garden", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.05, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["conv_pw_13_relu"] } },
+  { m: "vgg19", name: "Deep swirl", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["block3_conv4"] } },
+  { m: "vgg19", name: "VGG19 bloom", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 12, lr: 0.05, sharpen: 0.35, layers: ["block5_conv4"] } },
+  { m: "resnet50", name: "Residual wave", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["activation_21"] } },
+  { m: "resnet50", name: "Residual spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["activation_39"] } },
+  { m: "efficientnetb0", name: "B0 wave", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["StatefulPartitionedCall/model/stack_2/block_1/add/add"] } },
+  { m: "efficientnetb0", name: "B0 spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["StatefulPartitionedCall/model/top_activation/mul"] } },
+  { m: "densenet121", name: "Dense wave", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["conv3_block12_concat"] } },
+  { m: "densenet121", name: "Dense spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["conv5_block16_concat"] } },
+  { m: "inceptionresnetv2", name: "IRv2 wave", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block17_18_ac/Relu"] } },
+  { m: "inceptionresnetv2", name: "IRv2 bloom", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 12, lr: 0.05, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu"] } },
 ];
-const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 16, facing: "environment", modelSrc: "live" };
+const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 16, facing: "environment", modelSrc: "live" };
 
 // ===== STATE =====
 const vid = $("vid"), artCv = $("artCv");
@@ -147,7 +167,26 @@ function loadSettings() { let s = {}; try { s = JSON.parse(localStorage.getItem(
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} updateEstimate(); }
 function setStatus(t, err) { const s = $("status"); s.textContent = t; s.className = err ? "err" : ""; }
 function setBar(p) { const b = $("bar"); if (p == null) { b.style.visibility = "hidden"; return; } b.style.visibility = "visible"; b.firstChild.style.width = Math.round(Math.max(0, Math.min(1, p)) * 100) + "%"; }
-function dims() { return QUALITY[settings.quality] || QUALITY.normal; }
+function dims() {
+  const q = QUALITY[settings.quality] || QUALITY.normal;
+  const r = settings.ratio || "1:1";   // quality is the short side; the long side follows the ratio
+  if (r === "9:16") return { w: q.w, h: Math.round(q.w * 16 / 9) };
+  if (r === "16:9") return { w: Math.round(q.h * 16 / 9), h: q.h };
+  return { w: q.w, h: q.h };
+}
+// Size the viewfinder to the photo ratio and fit it on screen.
+function applyRatio() {
+  const box = $("viewBox");
+  const r = settings.ratio || "1:1";
+  let ar = 1;
+  if (r === "9:16") ar = 9 / 16; else if (r === "16:9") ar = 16 / 9;
+  const availW = box.parentElement.clientWidth - 20;
+  const availH = Math.round(window.innerHeight * 0.58);
+  let w = availW, h = Math.round(w / ar);
+  if (h > availH) { h = availH; w = Math.round(h * ar); }
+  box.style.width = w + "px"; box.style.height = h + "px";
+  box.style.aspectRatio = "auto"; box.style.margin = "0 auto";
+}
 function clampFps(v) { v = parseFloat(v); if (!(v > 0)) v = 12; return Math.max(2, Math.min(30, v)); }
 function cardFps() { return clampFps(settings.playFps); }
 // The size to feed the model at one octave. A fixed-size model
@@ -182,12 +221,15 @@ async function startCamera() {
   }
 }
 function stopCamera() { if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } vid.srcObject = null; }
-function captureSquare() {
+function capturePhoto() {
   const q = dims(), c = document.createElement("canvas"); c.width = q.w; c.height = q.h;
   const ctx = c.getContext("2d");
   if (vid.readyState >= 2 && vid.videoWidth) {
-    const s = Math.min(vid.videoWidth, vid.videoHeight) / camZoom;   // zoomed: crop the centre, same as the scaled viewfinder
-    ctx.drawImage(vid, (vid.videoWidth - s) / 2, (vid.videoHeight - s) / 2, s, s, 0, 0, q.w, q.h);
+    const vw = vid.videoWidth, vh = vid.videoHeight, target = q.w / q.h;
+    let sw = vw, sh = vh;   // crop the video to the photo ratio, centred
+    if (vw / vh > target) sw = vh * target; else sh = vw / target;
+    sw /= camZoom; sh /= camZoom;   // pinch zoom: crop tighter, same as the scaled viewfinder
+    ctx.drawImage(vid, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, q.w, q.h);
   } else { ctx.fillStyle = "#222"; ctx.fillRect(0, 0, q.w, q.h); }
   return c;
 }
@@ -363,7 +405,19 @@ function zoomCrop(img, zf, ox, oy, sharpen) {
   });
 }
 function canvasToTensor(cv) { return tf.tidy(() => P.norm(tf.browser.fromPixels(cv).toFloat()).expandDims(0)); }
-async function tensorToCanvas(img, cv) { const t = tf.tidy(() => P.denorm(img.squeeze([0])).clipByValue(0, 1)); await tf.browser.toPixels(t, cv); t.dispose(); }
+const drawCv = document.createElement("canvas");   // reused offscreen canvas for tensorToCanvas
+async function tensorToCanvas(img, cv) {
+  const t = tf.tidy(() => P.denorm(img.squeeze([0])).clipByValue(0, 1));
+  // A square dream on a non-square canvas must cover, not stretch:
+  // draw the tensor to an offscreen canvas, then centre-crop it onto cv.
+  drawCv.width = t.shape[1]; drawCv.height = t.shape[0];
+  await tf.browser.toPixels(t, drawCv); t.dispose();
+  const ctx = cv.getContext("2d");
+  const tw = cv.width, th = cv.height, sw = drawCv.width, sh = drawCv.height;
+  const scale = Math.max(tw / sw, th / sh), dw = sw * scale, dh = sh * scale;
+  ctx.clearRect(0, 0, tw, th);
+  ctx.drawImage(drawCv, (tw - dw) / 2, (th - dh) / 2, dw, dh);
+}
 function noteStepTime(ms) { msPerStep = msPerStep == null ? ms : msPerStep * 0.8 + ms * 0.2; updateEstimate(); }
 function updateEstimate() {
   const el = $("estimate"); if (msPerStep == null) { el.textContent = ""; return; }
@@ -384,11 +438,11 @@ function nextNumber() { let n = parseInt(localStorage.getItem(COUNT_KEY) || "0",
 // ===== SHOOT + DREAM =====
 async function shootAndDream() {
   if (busy || zooming) return;
-  const shot = captureSquare();
+  const shot = capturePhoto();
   if (!await ensureReady()) return;
   disposeCard(); stopPlaying();
   const q = dims();
-  card = { id: "dc" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), no: nextNumber(), name: "Dream " + new Date().toLocaleDateString(), model: MODEL.short, preset: $("presetSel").selectedOptions[0] ? $("presetSel").selectedOptions[0].textContent : "", w: q.w, h: q.h, created: Date.now(), frames: [], pathFrame: 0, settings: Object.assign({}, settings) };
+  card = { id: "dc" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), no: nextNumber(), name: "Dream " + new Date().toLocaleDateString(), model: MODEL.short, preset: $("presetSel").selectedOptions[0] ? $("presetSel").selectedOptions[0].textContent : "", w: q.w, h: q.h, created: Date.now(), frames: [], pathFrame: 0, zoomTotal: 1, settings: Object.assign({}, settings) };
   seedCv.width = q.w; seedCv.height = q.h; seedCv.getContext("2d").drawImage(shot, 0, 0);
   artCv.width = q.w; artCv.height = q.h; artCv.getContext("2d").drawImage(shot, 0, 0);
   $("viewBox").classList.add("dreaming"); $("viewHint").textContent = "";
@@ -431,21 +485,33 @@ async function ensureCur() {
   if (src && src.close) src.close();
   cur = canvasToTensor(tmpCv);
 }
+// The zoom compounds every frame (0.97^50 ≈ 0.22), so past ~50 frames the
+// dream is magnifying a tiny patch of the original — nothing left but the
+// network's own grid of boxes. Cap the total magnification and ease off
+// the dream strength and sharpening as the run goes on, so a long run
+// stays clean instead of going crazy.
+const ZOOM_CAP = 3;
 async function zoomRun() {
   if (!card || busy || zooming || !card.frames.length) return;
   zooming = true; let failed = false, made = 0; updateUI();
+  if (card.zoomTotal == null) card.zoomTotal = ZOOM_CAP;   // old saves: already zoomed, don't zoom further
   const want = Math.max(1, Math.min(MAX_RUN, Math.round(settings.frames)));
   while (zooming && made < want && card.frames.length < TOTAL_MAX) {
     try {
       await ensureCur();
       card.pathFrame = (card.pathFrame || 0) + 1;
-      const off = pathOffset(card.pathFrame, card.w, card.h, settings);
-      const z = zoomCrop(cur, settings.zoomFactor, off[0], off[1], settings.sharpen || 0); cur.dispose(); cur = z;
+      const off = pathOffset(card.pathFrame, cur.shape[2], cur.shape[1], settings);
+      let zf = settings.zoomFactor;
+      if (card.zoomTotal >= ZOOM_CAP) zf = 1;
+      else if (card.zoomTotal / zf > ZOOM_CAP) zf = card.zoomTotal / ZOOM_CAP;
+      card.zoomTotal = card.zoomTotal / zf;
+      const z = zoomCrop(cur, zf, off[0], off[1], (settings.sharpen || 0) / (1 + card.frames.length * 0.01)); cur.dispose(); cur = z;
       if (MODEL.fixedSize && (cur.shape[1] !== MODEL.fixedSize || cur.shape[2] !== MODEL.fixedSize)) {
         const r = tf.image.resizeBilinear(cur, [MODEL.fixedSize, MODEL.fixedSize]); cur.dispose(); cur = r;
       }
       const t0 = performance.now();
-      for (let i = 0; i < settings.steps; i++) { const n = dreamStep(cur, settings.lr); cur.dispose(); cur = n; }
+      const lrEff = settings.lr / (1 + card.frames.length * 0.012);   // gentler as the run goes on
+      for (let i = 0; i < settings.steps; i++) { const n = dreamStep(cur, lrEff); cur.dispose(); cur = n; }
       await tensorToCanvas(cur, artCv); noteStepTime((performance.now() - t0) / Math.max(1, settings.steps));
       await pushFrame(); made++;
       setStatus("Zooming… frame " + made + " of " + want + " (" + card.frames.length + " total)"); setBar(made / want);
@@ -542,7 +608,7 @@ async function idbDo(mode, fn) { const db = await idb(); return new Promise((res
 async function keepInGallery() {
   if (!card || !card.frames.length) return;
   const thumb = card.frames[0];
-  const rec = { id: card.id, created: card.created, no: card.no, name: card.name, model: card.model, preset: card.preset, w: card.w, h: card.h, frames: card.frames.slice(), thumb: thumb, settings: card.settings };
+  const rec = { id: card.id, created: card.created, no: card.no, name: card.name, model: card.model, preset: card.preset, w: card.w, h: card.h, frames: card.frames.slice(), thumb: thumb, zoomTotal: card.zoomTotal, settings: card.settings };
   try { await idbDo("readwrite", st => st.put(rec)); setStatus("Kept in gallery."); renderGallery(); sendLatestDreamToWidget(); }
   catch (e) { setStatus("Couldn't keep it: " + (e && e.message || e), true); }
 }
@@ -565,7 +631,7 @@ async function renderGallery() {
       }
       if (busy || zooming) return;
       disposeCard(); stopPlaying();
-      card = { id: r.id, no: r.no, name: r.name, model: r.model, preset: r.preset, w: r.w, h: r.h, created: r.created, frames: r.frames.slice(), pathFrame: r.frames.length - 1, settings: r.settings || settings };
+      card = { id: r.id, no: r.no, name: r.name, model: r.model, preset: r.preset, w: r.w, h: r.h, created: r.created, frames: r.frames.slice(), pathFrame: r.frames.length - 1, zoomTotal: (r.zoomTotal != null ? r.zoomTotal : ZOOM_CAP), settings: r.settings || settings };
       artCv.width = r.w; artCv.height = r.h;
       $("viewBox").classList.add("dreaming"); $("viewHint").textContent = "";
       setStatus(r.name + " · " + r.frames.length + " frames. Continue to dream further.");
@@ -660,9 +726,10 @@ function applyPreset(i) {
 function syncControls() {
   const map = { steps: "steps", lr: "lr", zoomFactor: "zoomFactor", range: "range", segFrames: "segFrames", frames: "frames", playFps: "playFps", playFpsOut: "playFpsOut", sharpen: "sharpen", octaves: "octaves", jitter: "jitter" };
   for (const id of Object.keys(map)) { const el = $(id); el.value = settings[map[id]]; const v = $(id + "Val"); if (v) v.textContent = fmtVal(id, settings[map[id]]); }
-  $("path").value = settings.path; $("quality").value = settings.quality;
+  $("path").value = settings.path; $("quality").value = settings.quality; $("ratio").value = settings.ratio || "1:1";
   $("boomerang").value = settings.boomerang ? "1" : "0";
   $("facing").value = settings.facing; $("modelSrc").value = settings.modelSrc;
+  applyRatio();
 }
 function fmtVal(id, v) {
   if (id === "lr") return (+v).toFixed(3);
@@ -687,6 +754,9 @@ function initControls() {
   $("path").addEventListener("change", () => { settings.path = $("path").value; saveSettings(); });
   $("quality").value = settings.quality;
   $("quality").addEventListener("change", () => { settings.quality = $("quality").value; saveSettings(); });
+  $("ratio").value = settings.ratio || "1:1";
+  $("ratio").addEventListener("change", () => { settings.ratio = $("ratio").value; saveSettings(); applyRatio(); });
+  window.addEventListener("resize", applyRatio);
   $("boomerang").value = settings.boomerang ? "1" : "0";
   $("boomerang").addEventListener("change", () => { settings.boomerang = $("boomerang").value === "1"; saveSettings(); });
   $("facing").value = settings.facing;
@@ -728,10 +798,12 @@ function initControls() {
       if (!await ensureReady()) { URL.revokeObjectURL(url); return; }
       disposeCard(); stopPlaying();
       const q = dims();
-      card = { id: "dc" + Date.now().toString(36), no: nextNumber(), name: f.name.replace(/\.[^.]+$/, "") || "Upload", model: MODEL.short, preset: "", w: q.w, h: q.h, created: Date.now(), frames: [], pathFrame: 0, settings: Object.assign({}, settings) };
+      card = { id: "dc" + Date.now().toString(36), no: nextNumber(), name: f.name.replace(/\.[^.]+$/, "") || "Upload", model: MODEL.short, preset: "", w: q.w, h: q.h, created: Date.now(), frames: [], pathFrame: 0, zoomTotal: 1, settings: Object.assign({}, settings) };
       const c = document.createElement("canvas"); c.width = q.w; c.height = q.h;
-      const s = Math.min(im.naturalWidth, im.naturalHeight);
-      c.getContext("2d").drawImage(im, (im.naturalWidth - s) / 2, (im.naturalHeight - s) / 2, s, s, 0, 0, q.w, q.h);
+      const target = q.w / q.h;
+      let sw = im.naturalWidth, sh = im.naturalHeight;   // crop the photo to the ratio, centred
+      if (sw / sh > target) sw = sh * target; else sh = sw / target;
+      c.getContext("2d").drawImage(im, (im.naturalWidth - sw) / 2, (im.naturalHeight - sh) / 2, sw, sh, 0, 0, q.w, q.h);
       seedCv.width = q.w; seedCv.height = q.h; seedCv.getContext("2d").drawImage(c, 0, 0);
       artCv.width = q.w; artCv.height = q.h; artCv.getContext("2d").drawImage(c, 0, 0);
       $("viewBox").classList.add("dreaming"); $("viewHint").textContent = "";
