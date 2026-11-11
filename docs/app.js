@@ -622,6 +622,18 @@ async function exportStill() {
   setStatus("Still saved.");
 }
 function downloadBlob(blob, name) {
+  // In the app the WebView ignores the download attribute, so hand the
+  // file to the app to save into Downloads. In a browser, download it.
+  if (window.DreamCameraBridge && window.DreamCameraBridge.saveFile) {
+    const r = new FileReader();
+    r.onload = () => { try { window.DreamCameraBridge.saveFile(r.result, name, blob.type || "application/octet-stream"); } catch (e) { downloadBlobWeb(blob, name); } };
+    r.onerror = () => downloadBlobWeb(blob, name);
+    r.readAsDataURL(blob);
+    return;
+  }
+  downloadBlobWeb(blob, name);
+}
+function downloadBlobWeb(blob, name) {
   const u = URL.createObjectURL(blob), a = document.createElement("a");
   a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(u), 5000);
@@ -849,7 +861,7 @@ function initControls() {
 }
 
 // ===== VIDEO TAB =====
-// Deepdream a whole video (up to 30s). Three modes:
+// Deepdream a whole video (up to 15s). Three modes:
 //  Frame Dream — dream every frame, stitch it back together.
 //  Photo Transfer — a photo becomes the dream overlay on the video.
 //  Dreamweave — the style photo is dreamed live while the video plays,
@@ -873,6 +885,22 @@ function switchTab(name) {
   $("tabVideo").classList.toggle("on", !cam);
   if (cam) applyRatio();
 }
+// Video presets: one tap sets mode, steps, mix, weave and zoom together.
+const VIDEO_PRESETS = {
+  gentle: { mode: "frame", steps: 1, mix: 0, weave: 0.15, zoom: false },
+  dreamweave: { mode: "dreamweave", steps: 2, mix: 0.5, weave: 0.3, zoom: true },
+  inception: { mode: "dreamweave", steps: 4, mix: 0.7, weave: 0.5, zoom: true },
+  transfer: { mode: "transfer", steps: 2, mix: 0.6, weave: 0.15, zoom: false }
+};
+function applyVideoPreset(name) {
+  const p = VIDEO_PRESETS[name]; if (!p) return;
+  $("videoMode").value = p.mode;
+  $("videoSteps").value = p.steps; $("videoStepsVal").textContent = p.steps;
+  $("videoMix").value = p.mix; $("videoMixVal").textContent = p.mix.toFixed(2);
+  $("videoWeave").value = p.weave; $("videoWeaveVal").textContent = p.weave.toFixed(2);
+  $("videoZoom").value = p.zoom ? "1" : "0";
+  videoModeNote();
+}
 function videoModeNote() {
   const m = $("videoMode").value;
   const notes = {
@@ -884,6 +912,7 @@ function videoModeNote() {
   const needStyle = m !== "frame";
   $("styleRow").style.display = needStyle ? "" : "none";
   $("mixRow").style.display = needStyle ? "" : "none";
+  $("weaveRow").style.display = m === "dreamweave" ? "" : "none";
 }
 function updateVideoUI() {
   $("videoDreamBtn").disabled = videoRunning || !videoMeta;
@@ -915,7 +944,7 @@ async function processVideo() {
   src.muted = true; src.playsInline = true; src.preload = "auto"; src.src = videoSrc;
   try { await new Promise((res, rej) => { src.onloadedmetadata = res; src.onerror = () => rej(new Error("could not read that video")); }); }
   catch (e) { setVideoStatus("Could not read that video.", true); videoRunning = false; updateVideoUI(); return; }
-  const dur = Math.min(30, src.duration || 0);
+  const dur = Math.min(15, src.duration || 0);
   const fps = parseInt($("videoFps").value, 10) || 12;
   const total = Math.max(1, Math.floor(dur * fps));
   const vd = videoDims(src.videoWidth, src.videoHeight);
@@ -936,16 +965,23 @@ async function processVideo() {
       inCv.getContext("2d").drawImage(src, 0, 0, vd.w, vd.h);
       let cur = canvasToTensor(inCv);
       if (mode === "dreamweave" && prev) {
-        const w = tf.tidy(() => cur.mul(0.7).add(prev.mul(0.3)));   // weave: carry the last frame forward
+        const weave = parseFloat($("videoWeave").value) || 0.3;
+        const w = tf.tidy(() => cur.mul(1 - weave).add(prev.mul(weave)));   // weave: carry the last frame forward
         cur.dispose(); cur = w;
       }
       if (mode !== "frame" && styleT) {
         if (mode === "dreamweave" && i % 6 === 0) {   // the style itself dreams, twice a second
-          styleT = dreamSteps(styleT, settings.lr, 1, false);
+          // The style zooms in and dreams along with the video — extra
+          // inception: the overlay is a living dream, not a static picture.
+          const zs = zoomCrop(styleT, 0.99, 0, 0, 0); styleT.dispose(); styleT = zs;
+          styleT = dreamSteps(styleT, settings.lr, 2, false);
         }
         const mix = parseFloat($("videoMix").value) || 0.5;
         const b = tf.tidy(() => cur.mul(1 - mix).add(styleT.mul(mix)));
         cur.dispose(); cur = b;
+      }
+      if ($("videoZoom").value === "1") {   // zoom in a touch every frame, like the still dream
+        const z = zoomCrop(cur, 0.998, 0, 0, 0); cur.dispose(); cur = z;
       }
       const steps = parseInt($("videoSteps").value, 10) || 2;
       cur = dreamSteps(cur, settings.lr, steps, true);
@@ -979,8 +1015,10 @@ function initVideoTab() {
   $("tabVideo").onclick = () => switchTab("video");
   $("videoMode").addEventListener("change", videoModeNote);
   videoModeNote();
+  $("videoPreset").addEventListener("change", e => applyVideoPreset(e.target.value));
   $("videoSteps").addEventListener("input", () => { $("videoStepsVal").textContent = $("videoSteps").value; });
   $("videoMix").addEventListener("input", () => { $("videoMixVal").textContent = (+$("videoMix").value).toFixed(2); });
+  $("videoWeave").addEventListener("input", () => { $("videoWeaveVal").textContent = (+$("videoWeave").value).toFixed(2); });
   $("videoPickBtn").onclick = () => $("videoIn").click();
   $("videoIn").addEventListener("change", () => {
     const f = $("videoIn").files[0]; if (!f) return;
@@ -991,8 +1029,8 @@ function initVideoTab() {
     v.onloadedmetadata = () => {
       const d = v.duration || 0;
       videoMeta = { duration: d, width: v.videoWidth, height: v.videoHeight };
-      $("videoInfo").textContent = f.name + " · " + d.toFixed(1) + "s" + (d > 30 ? " (first 30s used)" : "") + " · " + v.videoWidth + "×" + v.videoHeight;
-      setVideoStatus(d > 30 ? "That video is over 30s — only the first 30s will be dreamed." : "Video ready. Pick a mode and dream it.");
+      $("videoInfo").textContent = f.name + " · " + d.toFixed(1) + "s" + (d > 15 ? " (first 15s used)" : "") + " · " + v.videoWidth + "×" + v.videoHeight;
+      setVideoStatus(d > 15 ? "That video is over 15s — only the first 15s will be dreamed." : "Video ready. Pick a mode and dream it.");
       updateVideoUI();
     };
     v.onerror = () => { setVideoStatus("Could not read that video.", true); videoMeta = null; updateVideoUI(); };
