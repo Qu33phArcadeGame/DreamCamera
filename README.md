@@ -1,4 +1,4 @@
-# DreamCamera v1.12
+# DreamCamera v1.13
 
 Deepdream camera. Nothing else. No dreamlings, no game, no coins.
 
@@ -43,6 +43,8 @@ v1.5: three new models, all gradient-verified real — VGG19 (80 MB), ResNet50 (
 v1.6: the last two models, converted from Keras weights and gradient-verified — DenseNet121 (32 MB, new torch preprocessing) and InceptionResNetV2 (214 MB, graph model, fixed 299 — its layers version cannot load in TF.js). All 11 models real and bundled in the APK (~535 MB total).
 
 v1.7: long runs stay clean — the zoom now caps at 3x total magnification and the dream strength eases off as the run goes on, so it no longer turns into a grid of boxes past 50 frames. Higher resolutions (Ultra 768, Max 1024), photo ratios (1:1, 9:16, 16:9), progress bar moved below the Shoot button, subtle holographic buttons, 46 presets (4+ per model), and the model notes cleaned up.
+
+v1.13: rebuilt the video export the way you asked — it now records the dream area on screen as it plays (zoom in, then back out) and spits it out as an MP4. The export renders to a dedicated canvas at up to 720p (the card itself is small, so recording it 1:1 made a tiny blurry file) at 10 Mbps, and the de-grid blur is gentler now (10% → 5% per frame) so the frames stay sharper through the zoom instead of washing out soft. The viewfinder shows the dream playing while it records.
 
 v1.12: fixed glitchy saved videos — the recorder was capturing in real time while each frame takes seconds to dream, so it recorded dozens of duplicate frames per dreamed frame and the video came out minutes long, choppy and glitchy. It now captures exactly one frame per dreamed frame (captureStream(0) + requestFrame), so saved videos are the right length and smooth — this covers both the Video tab and the still Save video button. Way more presets: 82 camera presets now (was 46) — v1 12, v2 10, v3 8, VGG16 8, MobileNetV2 7, MobileNetV1 7, VGG19 6, ResNet50 6, EfficientNetB0 6, DenseNet121 6, InceptionResNetV2 6 — every layer reference verified against the model; plus 4 new video presets (Slow Burn, Weave Light, Transfer Deep, Hyper Weave) for 8 total.
 
