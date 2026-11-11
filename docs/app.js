@@ -129,6 +129,42 @@ const PRESETS = [
   { m: "densenet121", name: "Dense spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["conv5_block16_concat"] } },
   { m: "inceptionresnetv2", name: "IRv2 wave", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block17_18_ac/Relu"] } },
   { m: "inceptionresnetv2", name: "IRv2 bloom", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 12, lr: 0.05, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu"] } },
+  { m: "v1", name: "Tiny eyes", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["mixed3a", "mixed3b"] } },
+  { m: "v1", name: "Deep dive", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 14, lr: 0.05, sharpen: 0.35, layers: ["mixed5a", "mixed5b"] } },
+  { m: "v1", name: "Creature soup", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 12, lr: 0.05, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["mixed4a", "mixed4e"] } },
+  { m: "v1", name: "Neon garden", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["mixed3b", "mixed4d"] } },
+  { m: "v1", name: "Slow spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["mixed5a"] } },
+  { m: "v1", name: "Eye candy", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 16, lr: 0.055, sharpen: 0.35, layers: ["mixed4b", "mixed4e"] } },
+  { m: "v2", name: "Early woods", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 8, lr: 0.04, sharpen: 0.35, layers: ["InceptionV2/InceptionV2/Mixed_3b/concat", "InceptionV2/InceptionV2/Mixed_3c/concat"] } },
+  { m: "v2", name: "Mid woods", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["InceptionV2/InceptionV2/Mixed_4a/concat", "InceptionV2/InceptionV2/Mixed_4b/concat"] } },
+  { m: "v2", name: "Deep canopy", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 12, lr: 0.045, sharpen: 0.35, layers: ["InceptionV2/InceptionV2/Mixed_5c/concat"] } },
+  { m: "v2", name: "Woods drift", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["InceptionV2/InceptionV2/Mixed_4b/concat", "InceptionV2/InceptionV2/Mixed_5a/concat"] } },
+  { m: "v2", name: "Canopy spiral", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.045, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["InceptionV2/InceptionV2/Mixed_5b/concat"] } },
+  { m: "v2", name: "Forest floor", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.04, sharpen: 0.35, layers: ["InceptionV2/InceptionV2/Mixed_3c/concat", "InceptionV2/InceptionV2/Mixed_4a/concat"] } },
+  { m: "v3", name: "Soft fur", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["mixed2", "mixed4"] } },
+  { m: "v3", name: "Wild fur", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 12, lr: 0.05, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["mixed3", "mixed6"] } },
+  { m: "v3", name: "Fur wave", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["mixed5", "mixed7"] } },
+  { m: "v3", name: "Deep fur", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 14, lr: 0.05, sharpen: 0.35, layers: ["mixed4", "mixed6", "mixed7"] } },
+  { m: "vgg16", name: "Early paint", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["block1_conv2"] } },
+  { m: "vgg16", name: "Soft paint", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 8, lr: 0.045, sharpen: 0.35, layers: ["block2_conv2"] } },
+  { m: "vgg16", name: "Paint drift", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["block1_conv2", "block3_conv3"] } },
+  { m: "vgg16", name: "Deep paint", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 12, lr: 0.045, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["block2_conv2", "block4_conv3", "block5_conv3"] } },
+  { m: "mobilenetv2", name: "Pocket early", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["module_apply_default/MobilenetV2/expanded_conv_5/project/BatchNorm/FusedBatchNorm"] } },
+  { m: "mobilenetv2", name: "Pocket mid", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["module_apply_default/MobilenetV2/expanded_conv_5/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_10/project/BatchNorm/FusedBatchNorm"] } },
+  { m: "mobilenetv2", name: "Pocket deep", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["module_apply_default/MobilenetV2/expanded_conv_16/project/BatchNorm/FusedBatchNorm", "module_apply_default/MobilenetV2/expanded_conv_13/project/BatchNorm/FusedBatchNorm"] } },
+  { m: "mobilenetv1", name: "Tiny early", s: { path: "straight", frames: 50, zoomFactor: 0.96, steps: 8, lr: 0.05, sharpen: 0.35, layers: ["conv_pw_9_relu", "conv_pw_10_relu"] } },
+  { m: "mobilenetv1", name: "Tiny deep", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.05, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["conv_pw_12_relu", "conv_pw_13_relu"] } },
+  { m: "mobilenetv1", name: "Tiny mix", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 8, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["conv_pw_9_relu", "conv_pw_12_relu"] } },
+  { m: "vgg19", name: "VGG19 early", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["block3_conv4", "block4_conv4"] } },
+  { m: "vgg19", name: "VGG19 full", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 12, lr: 0.05, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["block3_conv4", "block4_conv4", "block5_conv4"] } },
+  { m: "resnet50", name: "Residual drift", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 12, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["activation_21"] } },
+  { m: "resnet50", name: "Residual melt", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 14, lr: 0.055, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["activation_39"] } },
+  { m: "efficientnetb0", name: "B0 early", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["StatefulPartitionedCall/model/stack_2/block_1/add/add", "StatefulPartitionedCall/model/stack_4/block_2/add/add"] } },
+  { m: "efficientnetb0", name: "B0 full", s: { path: "square", frames: 50, zoomFactor: 0.97, steps: 12, lr: 0.05, range: 0.08, segFrames: 8, sharpen: 0.35, layers: ["StatefulPartitionedCall/model/stack_2/block_1/add/add", "StatefulPartitionedCall/model/stack_4/block_2/add/add", "StatefulPartitionedCall/model/stack_6/block_0/project_bn/FusedBatchNormV3", "StatefulPartitionedCall/model/top_activation/mul"] } },
+  { m: "densenet121", name: "Dense full", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 12, lr: 0.05, sharpen: 0.35, layers: ["conv3_block12_concat", "conv4_block24_concat", "conv5_block16_concat"] } },
+  { m: "densenet121", name: "Dense early", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["conv3_block12_concat", "conv4_block24_concat"] } },
+  { m: "inceptionresnetv2", name: "IRv2 full", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 12, lr: 0.05, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_18_ac/Relu"] } },
+  { m: "inceptionresnetv2", name: "IRv2 deep", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block17_18_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu"] } },
 ];
 const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live" };
 
@@ -592,7 +628,13 @@ async function exportVideo() {
   busy = true; updateUI();
   try {
     const mime = videoMime(), L = seqLength(), fpsIn = cardFps(), fpsOut = cardFpsOut();
-    const stream2 = artCv.captureStream(30);
+    // One frame per drawn frame (see processVideo): a live captureStream
+    // records duplicates while each frame is drawn slowly, and the saved
+    // video comes out long, choppy and glitchy.
+    const probeStream = artCv.captureStream(0);
+    const vtrack = probeStream.getVideoTracks()[0];
+    const manualFrames = !!(vtrack && typeof vtrack.requestFrame === "function");
+    const stream2 = manualFrames ? probeStream : artCv.captureStream(30);
     const rec = new MediaRecorder(stream2, mime ? { mimeType: mime, videoBitsPerSecond: 5000000 } : { videoBitsPerSecond: 5000000 });
     const chunks = []; rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     const done = new Promise(r => rec.onstop = r);
@@ -602,7 +644,8 @@ async function exportVideo() {
       const im = await decodeBlob(card.frames[fi]);
       if (im) { const c = artCv.getContext("2d"); c.clearRect(0, 0, card.w, card.h); c.drawImage(im, 0, 0, card.w, card.h); if (im.close) im.close(); }
       setStatus("Recording video… " + (i + 1) + " / " + L); setBar((i + 1) / L);
-      await sleep(1000 / fps);
+      if (manualFrames) { vtrack.requestFrame(); await sleep(60); }
+      else await sleep(1000 / fps);
     }
     await sleep(300); rec.stop(); await done;
     const blob = new Blob(chunks, { type: mime || "video/webm" });
@@ -890,7 +933,11 @@ const VIDEO_PRESETS = {
   gentle: { mode: "frame", steps: 1, mix: 0, weave: 0.15, zoom: false },
   dreamweave: { mode: "dreamweave", steps: 2, mix: 0.5, weave: 0.3, zoom: true },
   inception: { mode: "dreamweave", steps: 4, mix: 0.7, weave: 0.5, zoom: true },
-  transfer: { mode: "transfer", steps: 2, mix: 0.6, weave: 0.15, zoom: false }
+  transfer: { mode: "transfer", steps: 2, mix: 0.6, weave: 0.15, zoom: false },
+  slowburn: { mode: "frame", steps: 3, mix: 0, weave: 0.2, zoom: true },
+  weavelight: { mode: "dreamweave", steps: 1, mix: 0.3, weave: 0.2, zoom: false },
+  transferdeep: { mode: "transfer", steps: 4, mix: 0.8, weave: 0.15, zoom: true },
+  hyperweave: { mode: "dreamweave", steps: 4, mix: 0.85, weave: 0.6, zoom: true }
 };
 function applyVideoPreset(name) {
   const p = VIDEO_PRESETS[name]; if (!p) return;
@@ -952,7 +999,16 @@ async function processVideo() {
   const outCv = document.createElement("canvas"); outCv.width = vd.w; outCv.height = vd.h;
   let styleT = null;
   if (mode !== "frame") { setVideoStatus("Dreaming the style photo…"); styleT = await makeStyleTexture(vd.w, vd.h); }
-  const stream = outCv.captureStream(fps);
+  // Record one frame per dreamed frame, not in real time: each frame takes
+  // seconds to dream, so a live captureStream(fps) records dozens of
+  // duplicate frames per dreamed frame and the saved video comes out
+  // minutes long, choppy and glitchy. captureStream(0) + requestFrame
+  // captures exactly one frame per draw, so the video is the right length
+  // and smooth. (Falls back to the live stream if requestFrame is missing.)
+  const probeStream = outCv.captureStream(0);
+  const vtrack = probeStream.getVideoTracks()[0];
+  const manualFrames = !!(vtrack && typeof vtrack.requestFrame === "function");
+  const stream = manualFrames ? probeStream : outCv.captureStream(fps);
   const mime = videoMime();
   const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8000000 } : { videoBitsPerSecond: 8000000 });
   const chunks = []; rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
@@ -990,7 +1046,8 @@ async function processVideo() {
       prev = cur;
       setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total);
       setVideoBar((i + 1) / total);
-      await sleep(1000 / fps);   // let the recorder capture this frame
+      if (manualFrames) { vtrack.requestFrame(); await sleep(60); }   // let the recorder grab this frame before the next draw
+      else await sleep(1000 / fps);
       await tf.nextFrame();
     }
   } catch (e) {
