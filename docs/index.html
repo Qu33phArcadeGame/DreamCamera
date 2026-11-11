@@ -75,7 +75,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.15</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.16</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">📷 Camera</button>
@@ -124,6 +124,8 @@
         <input type="range" id="frames" min="1" max="50" step="1"></label>
       <label><b>Image size</b>
         <select id="quality"><option value="turbo">Turbo · 192</option><option value="fast">Fast · 256</option><option value="normal" selected>Normal · 384</option><option value="high">High · 512</option><option value="ultra">Ultra · 768</option><option value="max">Max · 1024</option></select></label>
+      <label><b>Export size</b>
+        <select id="exportSize"><option value="720p">720p</option><option value="1080p" selected>1080p</option><option value="2k">2K</option><option value="4k">4K</option></select></label>
       <label><b>Photo ratio</b>
         <select id="ratio"><option value="1:1">Square · 1:1</option><option value="9:16">Portrait · 9:16</option><option value="16:9">Landscape · 16:9</option></select></label>
       <label><b>Play fps in <span class="val" id="playFpsVal"></span></b>
