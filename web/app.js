@@ -434,30 +434,6 @@ function dreamStep(img, lr) {
     return img.add(g.div(std.add(1e-8)).mul(lr)).clipByValue(P.lo, P.hi);
   });
 }
-function pathOffset(n, w, h, s) {
-  const seg = Math.max(1, Math.round(s.segFrames)), sub = (n % seg) / seg;
-  const rx = w * s.range / 2, ry = h * s.range / 2;
-  if (s.path === "square") {
-    const ph = Math.floor((n % (4 * seg)) / seg);
-    if (ph === 0) return [-rx + 2 * rx * sub, -ry];
-    if (ph === 1) return [rx, -ry + 2 * ry * sub];
-    if (ph === 2) return [rx - 2 * rx * sub, ry];
-    return [-rx, ry - 2 * ry * sub];
-  }
-  if (s.path === "triangle") {
-    const ph = Math.floor((n % (3 * seg)) / seg);
-    const v = [[0, -ry], [rx * Math.sqrt(3) / 2, ry / 2], [-rx * Math.sqrt(3) / 2, ry / 2]], a = v[ph], b = v[(ph + 1) % 3];
-    return [a[0] + (b[0] - a[0]) * sub, a[1] + (b[1] - a[1]) * sub];
-  }
-  if (s.path === "spiral") {   // NEW: slow outward spiral
-    const a = n * 0.35, r = Math.min(rx, ry) * Math.min(1, n / (seg * 6));
-    return [Math.cos(a) * r, Math.sin(a) * r];
-  }
-  if (s.path === "wave") {     // NEW: side-to-side sine wave
-    return [Math.sin(n / seg * Math.PI) * rx, Math.cos(n / (seg * 2) * Math.PI) * ry * 0.6];
-  }
-  return [0, 0];
-}
 function zoomCrop(img, zf, ox, oy, sharpen) {
   return tf.tidy(() => {
     const h = img.shape[1], w = img.shape[2], z = Math.max(0.5, Math.min(1, zf));
@@ -558,72 +534,14 @@ async function ensureCur() {
   if (src && src.close) src.close();
   cur = canvasToTensor(tmpCv);
 }
-// The zoom compounds every frame (0.97^50 ≈ 0.22), so past ~50 frames the
-// dream is magnifying a tiny patch of the original — nothing left but the
-// network's own grid of boxes. Cap the total magnification and ease off
-// the dream strength and sharpening as the run goes on, so a long run
-// stays clean instead of going crazy.
-const ZOOM_CAP = 3;
+// The zoom is the deep zoom: free-form, no grid. It keeps zooming in and
+// dreaming, and when it has magnified so far that it is running out of
+// pixels it upscales the working image (up to 512px, or the card size if
+// bigger) so the dream always has fresh room to grow new layers. The zoom
+// centre wanders a little every frame, so the pattern never locks onto a grid.
+const ZOOM_CAP = 3;   // kept for loading old saves (zoomTotal); the zoom itself no longer caps
 async function zoomRun() {
   if (!card || busy || zooming || !card.frames.length) return;
-  zooming = true; let failed = false, made = 0; updateUI();
-  if (card.zoomTotal == null) card.zoomTotal = ZOOM_CAP;   // old saves: already zoomed, don't zoom further
-  const want = Math.max(1, Math.min(MAX_RUN, Math.round(settings.frames)));
-  while (zooming && made < want && card.frames.length < TOTAL_MAX) {
-    try {
-      await ensureCur();
-      card.pathFrame = (card.pathFrame || 0) + 1;
-      const off = pathOffset(card.pathFrame, cur.shape[2], cur.shape[1], settings);
-      let zf = settings.zoomFactor;
-      if (card.zoomTotal >= ZOOM_CAP) zf = 1;
-      else if (card.zoomTotal / zf > ZOOM_CAP) zf = card.zoomTotal / ZOOM_CAP;
-      card.zoomTotal = card.zoomTotal / zf;
-      const z = zoomCrop(cur, zf, off[0], off[1], (settings.sharpen || 0) / (1 + card.frames.length * 0.01)); cur.dispose(); cur = z;
-      const t0 = performance.now();
-      const lrEff = settings.lr / (1 + card.frames.length * 0.012);   // gentler as the run goes on
-      cur = dreamSteps(cur, lrEff, settings.steps, true);   // wash the grid out a little every frame
-      await tensorToCanvas(cur, artCv); noteStepTime((performance.now() - t0) / Math.max(1, settings.steps));
-      await pushFrame(); made++;
-      setStatus("Zooming… frame " + made + " of " + want + " (" + card.frames.length + " total)"); setBar(made / want);
-      await tf.nextFrame();
-    } catch (e) {
-      console.error(e); if (cur) { cur.dispose(); cur = null; }
-      if (!(await nextEngine())) { setStatus("Zoom failed: " + (e && e.message || e), true); failed = true; break; }
-      setStatus("Switched to " + LABEL[engineOrder[engineIdx]] + " — carrying on…");
-    }
-  }
-  zooming = false; setBar(null);
-  if (!failed) {
-    if (card.frames.length >= TOTAL_MAX) setStatus("Full (" + TOTAL_MAX + " frames). Save it as a video!");
-    else if (made >= want) setStatus("Done: " + card.frames.length + " frames. Continue for 50 more, or save.");
-    else setStatus(card.frames.length + " frames. Stopped.");
-  }
-  sendLatestDreamToWidget();
-  startPlaying();
-  updateUI();
-}
-
-// ===== DEEP ZOOM =====
-// Free-form infinite zoom with no grid: it keeps zooming in and dreaming,
-// and when it has magnified so far that it is running out of pixels it
-// upscales the working image (up to 512px, or the card size if bigger) so
-// the dream always has fresh room to grow new layers. The zoom centre
-// wanders a little every frame, so the pattern never locks onto a grid.
-async function deepZoomRun() {
-  if (busy || zooming) return;
-  // Start from the current dream if there is one, else shoot a fresh photo.
-  if (!card || !card.frames.length) {
-    const shot = capturePhoto();
-    if (!await ensureReady()) return;
-    disposeCard(); stopPlaying();
-    const q = dims();
-    card = { id: "dc" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), no: nextNumber(), name: "Dream " + new Date().toLocaleDateString(), model: MODEL.short, preset: $("presetSel").selectedOptions[0] ? $("presetSel").selectedOptions[0].textContent : "", w: q.w, h: q.h, created: Date.now(), frames: [], pathFrame: 0, zoomTotal: 1, settings: Object.assign({}, settings) };
-    seedCv.width = q.w; seedCv.height = q.h; seedCv.getContext("2d").drawImage(shot, 0, 0);
-    artCv.width = q.w; artCv.height = q.h; artCv.getContext("2d").drawImage(shot, 0, 0);
-    $("viewBox").classList.add("dreaming"); $("viewHint").textContent = "";
-    await startDream();
-    if (!card || !card.frames.length) { updateUI(); return; }
-  }
   zooming = true; let failed = false, made = 0; updateUI();
   const DEEP_MAX = Math.max(512, Math.max(card.w, card.h));   // longest side the working image grows to
   const DRIFT = 0.04;   // free-form wander: up to 4% of the size per frame
@@ -652,24 +570,24 @@ async function deepZoomRun() {
         }
         await tensorToCanvas(deep, artCv); noteStepTime((performance.now() - t0) / Math.max(1, settings.steps));
         await pushFrame(); made++;
-        setStatus("Deep zooming… frame " + made + " · " + Math.max(deep.shape[1], deep.shape[2]) + "px · " + card.frames.length + " total");
+        setStatus("Zooming… frame " + made + " · " + Math.max(deep.shape[1], deep.shape[2]) + "px · " + card.frames.length + " total");
         setBar(card.frames.length / TOTAL_MAX);
         await tf.nextFrame();
       } catch (e) {
         console.error(e); if (deep) { deep.dispose(); deep = null; }
-        if (!(await nextEngine())) { setStatus("Deep zoom failed: " + (e && e.message || e), true); failed = true; break; }
+        if (!(await nextEngine())) { setStatus("Zoom failed: " + (e && e.message || e), true); failed = true; break; }
         setStatus("Switched to " + LABEL[engineOrder[engineIdx]] + " — carrying on…");
         await ensureCur(); deep = cur; cur = null; deepZoom = 1;
       }
     }
   } catch (e) {
-    console.error(e); setStatus("Deep zoom failed: " + (e && e.message || e), true); failed = true;
+    console.error(e); setStatus("Zoom failed: " + (e && e.message || e), true); failed = true;
   }
   if (deep) { deep.dispose(); deep = null; }
   zooming = false; setBar(null);
   if (!failed) {
     if (card.frames.length >= TOTAL_MAX) setStatus("Full (" + TOTAL_MAX + " frames). Save it as a video!");
-    else if (made) setStatus("Deep zoom done: " + card.frames.length + " frames. Save it as a video!");
+    else if (made) setStatus("Done: " + card.frames.length + " frames. Save it as a video!");
     else setStatus(card.frames.length + " frames. Stopped.");
   }
   sendLatestDreamToWidget();
@@ -838,7 +756,6 @@ async function resetCamera() {
 }
 function updateUI() {
   $("shootBtn").disabled = busy || zooming;
-  $("deepZoomBtn").disabled = busy || zooming;
   $("stopBtn").disabled = !(busy || zooming);
   $("continueBtn").disabled = !card || !card.frames.length || busy || zooming || card.frames.length >= TOTAL_MAX;
   $("videoBtn").disabled = !card || !card.frames.length || busy || zooming;
@@ -941,7 +858,6 @@ function initControls() {
   $("engineBtn").addEventListener("click", () => { cycleEngine(); });
   $("modelSrc").addEventListener("change", () => { settings.modelSrc = $("modelSrc").value; ready = false; model = null; midModel = null; saveSettings(); setStatus("Model source: " + (settings.modelSrc === "local" ? "local models/ folder" : "live site") + ". Loads on next shoot."); });
   $("shootBtn").onclick = shootAndDream;
-  $("deepZoomBtn").onclick = deepZoomRun;
   $("viewBox").onclick = () => { if (Date.now() - pinchEndAt < 400) return; if (!busy && !zooming && card && card.frames.length && $("viewBox").classList.contains("dreaming")) return; shootAndDream(); };
   const vb = $("viewBox");
   vb.addEventListener("touchstart", e => {
