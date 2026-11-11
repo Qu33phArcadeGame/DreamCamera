@@ -1,4 +1,4 @@
-# DreamCamera v1.8
+# DreamCamera v1.9
 
 Deepdream camera. Nothing else. No dreamlings, no game, no coins.
 
@@ -43,6 +43,8 @@ v1.5: three new models, all gradient-verified real — VGG19 (80 MB), ResNet50 (
 v1.6: the last two models, converted from Keras weights and gradient-verified — DenseNet121 (32 MB, new torch preprocessing) and InceptionResNetV2 (214 MB, graph model, fixed 299 — its layers version cannot load in TF.js). All 11 models real and bundled in the APK (~535 MB total).
 
 v1.7: long runs stay clean — the zoom now caps at 3x total magnification and the dream strength eases off as the run goes on, so it no longer turns into a grid of boxes past 50 frames. Higher resolutions (Ultra 768, Max 1024), photo ratios (1:1, 9:16, 16:9), progress bar moved below the Shoot button, subtle holographic buttons, 46 presets (4+ per model), and the model notes cleaned up.
+
+v1.9: fixed the bottom settings panel not scrolling at all — the v1.8 tab wrapper broke the flex layout, so the settings grew past the screen and the bottom options (Engine, Continue, Upload, gallery) could not be swiped to. The tab panes are now proper flex columns, so the settings area gets a real height and scrolls under the pinned viewfinder, in both the Camera and Video tabs.
 
 v1.8: the grid is washed out further — default jitter 16 → 24 (slider now to 48) and a light de-grid blur mix (10%) after every frame's dream steps. New logo: the Dreamlings pixel-D eye set into the camera lens (dream eye camera), now the app icon + web favicon/header. Preset "Silk road" renamed "Velvet fur". New Video tab: deepdream a whole video (up to 30s) in three modes — Frame Dream (dream every frame, stitch it back), Photo Transfer (a photo becomes the dream overlay), and Dreamweave (the style photo is dreamed live while the video plays, so the style itself grows, and each frame is woven out of the last so it flows without flicker). Fixed the start-of-dream zoom/crop jump: fixed-size models now letterbox the photo into their square and un-letterbox it back, so the dream starts exactly where the photo is — same aspect ratio, same framing, no squeeze, no crop.
 
