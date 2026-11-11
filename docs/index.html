@@ -52,6 +52,12 @@
   .tabs{display:flex;gap:8px;margin:8px 0 10px;flex-shrink:0}
   .tab{flex:1;padding:9px;border-radius:10px;font-size:15px}
   .tab.on{background:linear-gradient(135deg,#ff2fd6,#7b2fff 55%,#00e5ff);box-shadow:0 0 14px rgba(255,47,214,.5)}
+  /* The tab panes are flex columns that fill the space under the tabs, so
+     the scroll area inside each one gets a real height and can scroll.
+     (Without this the panes were plain blocks, the settings grew past the
+     screen, and the bottom options could not be swiped to at all.) */
+  #cameraTab,#videoTab{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+  #cameraTab[hidden],#videoTab[hidden]{display:none}
   #videoStatus{font-size:13px;min-height:18px;margin-top:10px;color:#7df9ff}
   #videoBox video{object-fit:contain}
   #estimate{font-size:12px;opacity:.7;margin-top:4px}
@@ -69,7 +75,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.8</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.9</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">📷 Camera</button>
