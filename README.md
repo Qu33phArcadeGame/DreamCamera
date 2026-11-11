@@ -1,4 +1,4 @@
-# DreamCamera v1.13
+# DreamCamera v1.14
 
 Deepdream camera. Nothing else. No dreamlings, no game, no coins.
 
@@ -43,6 +43,8 @@ v1.5: three new models, all gradient-verified real — VGG19 (80 MB), ResNet50 (
 v1.6: the last two models, converted from Keras weights and gradient-verified — DenseNet121 (32 MB, new torch preprocessing) and InceptionResNetV2 (214 MB, graph model, fixed 299 — its layers version cannot load in TF.js). All 11 models real and bundled in the APK (~535 MB total).
 
 v1.7: long runs stay clean — the zoom now caps at 3x total magnification and the dream strength eases off as the run goes on, so it no longer turns into a grid of boxes past 50 frames. Higher resolutions (Ultra 768, Max 1024), photo ratios (1:1, 9:16, 16:9), progress bar moved below the Shoot button, subtle holographic buttons, 46 presets (4+ per model), and the model notes cleaned up.
+
+v1.14: new Deep Zoom mode — a "🔍 Deep Zoom" button next to Shoot & Dream. It zooms in and keeps dreaming, free-form, with no grid: the zoom centre wanders a little every frame so the pattern never locks onto a grid, it dreams new layers in at every zoom level, and when it has magnified so far that it is running out of pixels it upscales the working image (up to 512px, or the card size if bigger) so the dream always has fresh room to grow. It runs until you hit Stop or 500 frames, and it works from a fresh photo or continues the dream you already have. Save it as a video when you are done.
 
 v1.13: rebuilt the video export the way you asked — it now records the dream area on screen as it plays (zoom in, then back out) and spits it out as an MP4. The export renders to a dedicated canvas at up to 720p (the card itself is small, so recording it 1:1 made a tiny blurry file) at 10 Mbps, and the de-grid blur is gentler now (10% → 5% per frame) so the frames stay sharper through the zoom instead of washing out soft. The viewfinder shows the dream playing while it records.
 
