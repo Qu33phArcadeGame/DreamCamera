@@ -75,6 +75,13 @@ const PRE = {
 };
 const WASM_PATH = "tfjs/";
 const QUALITY = { turbo: { w: 192, h: 192 }, fast: { w: 256, h: 256 }, normal: { w: 384, h: 384 }, high: { w: 512, h: 512 }, ultra: { w: 768, h: 768 }, max: { w: 1024, h: 1024 } };
+// Export size is the long side of the saved video/still, upscaled from the
+// dream. The dream itself tops out at 1024 (a 2K/4K image through the model
+// would take minutes a frame and run the phone out of memory), so 2K/4K
+// here means a true 2K/4K file, upscaled with high-quality filtering —
+// sharpest when the dream was made at Max 1024.
+const EXPORT_SIZE = { "720p": 1280, "1080p": 1920, "2k": 2560, "4k": 3840 };
+const EXPORT_BITRATE = { "720p": 8000000, "1080p": 12000000, "2k": 18000000, "4k": 30000000 };
 const MAX_RUN = 50, TOTAL_MAX = 500;   // 50 frames per run; Continue adds 50 more, up to 500 total
 const OCTAVE_SCALE = 1.35;
 const LABEL = { webgpu: "WebGPU (GPU)", webgl: "WebGL (GPU)", wasm: "WebAssembly (CPU)", cpu: "JavaScript (CPU)" };
@@ -166,7 +173,7 @@ const PRESETS = [
   { m: "inceptionresnetv2", name: "IRv2 full", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 12, lr: 0.05, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_18_ac/Relu"] } },
   { m: "inceptionresnetv2", name: "IRv2 deep", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block17_18_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu"] } },
 ];
-const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live" };
+const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live", exportSize: "1080p" };
 
 // ===== STATE =====
 const vid = $("vid"), artCv = $("artCv");
@@ -543,13 +550,15 @@ const ZOOM_CAP = 3;   // kept for loading old saves (zoomTotal); the zoom itself
 async function zoomRun() {
   if (!card || busy || zooming || !card.frames.length) return;
   zooming = true; let failed = false, made = 0; updateUI();
+  if (!await ensureReady()) { zooming = false; updateUI(); return; }   // loads the current model (in case it was switched between runs)
+  const want = Math.max(1, Math.min(MAX_RUN, Math.round(settings.frames)));   // 50 frames per run; switch preset/model, Continue for 50 more, up to 500 total
   const DEEP_MAX = Math.max(512, Math.max(card.w, card.h));   // longest side the working image grows to
   const DRIFT = 0.04;   // free-form wander: up to 4% of the size per frame
   let deep = null, deepZoom = 1;
   try {
     await ensureCur();   // cur = last frame
     deep = cur; cur = null;
-    while (zooming && card.frames.length < TOTAL_MAX) {
+    while (zooming && made < want && card.frames.length < TOTAL_MAX) {
       try {
         const h = deep.shape[1], w = deep.shape[2];
         const ox = (Math.random() * 2 - 1) * DRIFT * w, oy = (Math.random() * 2 - 1) * DRIFT * h;
@@ -570,8 +579,8 @@ async function zoomRun() {
         }
         await tensorToCanvas(deep, artCv); noteStepTime((performance.now() - t0) / Math.max(1, settings.steps));
         await pushFrame(); made++;
-        setStatus("Zooming… frame " + made + " · " + Math.max(deep.shape[1], deep.shape[2]) + "px · " + card.frames.length + " total");
-        setBar(card.frames.length / TOTAL_MAX);
+        setStatus("Zooming… frame " + made + " of " + want + " · " + Math.max(deep.shape[1], deep.shape[2]) + "px · " + card.frames.length + " total");
+        setBar(made / want);
         await tf.nextFrame();
       } catch (e) {
         console.error(e); if (deep) { deep.dispose(); deep = null; }
@@ -587,7 +596,7 @@ async function zoomRun() {
   zooming = false; setBar(null);
   if (!failed) {
     if (card.frames.length >= TOTAL_MAX) setStatus("Full (" + TOTAL_MAX + " frames). Save it as a video!");
-    else if (made) setStatus("Done: " + card.frames.length + " frames. Save it as a video!");
+    else if (made >= want) setStatus("Done: " + card.frames.length + " frames. Switch the preset or model, then Continue for 50 more, or save.");
     else setStatus(card.frames.length + " frames. Stopped.");
   }
   sendLatestDreamToWidget();
@@ -621,13 +630,15 @@ async function exportVideo() {
   try {
     const mime = videoMime(), L = seqLength(), fpsIn = cardFps(), fpsOut = cardFpsOut();
     // Record the dream area as it plays (zoom in, then back out) and spit
-    // it out as an MP4. The frames are drawn to a dedicated export canvas
-    // at up to 720p (the card itself is small, e.g. Turbo 192, so recording
-    // it 1:1 makes a tiny blurry file) and to the viewfinder too, so you
-    // watch it record. One frame per draw, via requestFrame, so the video
-    // is the right length and smooth — never a live capture, which records
-    // duplicates while frames are drawn slowly and comes out glitchy.
-    const exScale = Math.max(1, Math.min(2, 720 / Math.max(card.w, card.h)));
+    // it out as an MP4, at the chosen export size (up to 4K). The frames are
+    // drawn to a dedicated export canvas at that size (the card itself is
+    // small, e.g. Turbo 192, so recording it 1:1 makes a tiny blurry file)
+    // and to the viewfinder too, so you watch it record. One frame per draw,
+    // via requestFrame, so the video is the right length and smooth — never
+    // a live capture, which records duplicates while frames are drawn slowly
+    // and comes out glitchy.
+    const exLong = EXPORT_SIZE[settings.exportSize] || 1920;
+    const exScale = Math.max(1, exLong / Math.max(card.w, card.h));
     const exCv = document.createElement("canvas");
     exCv.width = Math.round(card.w * exScale); exCv.height = Math.round(card.h * exScale);
     const exCtx = exCv.getContext("2d"); exCtx.imageSmoothingEnabled = true; exCtx.imageSmoothingQuality = "high";
@@ -635,7 +646,8 @@ async function exportVideo() {
     const vtrack = probeStream.getVideoTracks()[0];
     const manualFrames = !!(vtrack && typeof vtrack.requestFrame === "function");
     const stream2 = manualFrames ? probeStream : exCv.captureStream(30);
-    const rec = new MediaRecorder(stream2, mime ? { mimeType: mime, videoBitsPerSecond: 10000000 } : { videoBitsPerSecond: 10000000 });
+    const bitrate = EXPORT_BITRATE[settings.exportSize] || 12000000;
+    const rec = new MediaRecorder(stream2, mime ? { mimeType: mime, videoBitsPerSecond: bitrate } : { videoBitsPerSecond: bitrate });
     const chunks = []; rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     const done = new Promise(r => rec.onstop = r);
     rec.start(200);
@@ -662,11 +674,14 @@ async function exportVideo() {
 async function exportStill() {
   if (!card || !card.frames.length) return;
   const im = await decodeBlob(card.frames[card.frames.length - 1]);
-  const c = document.createElement("canvas"); c.width = card.w; c.height = card.h;
-  c.getContext("2d").drawImage(im, 0, 0, card.w, card.h); if (im && im.close) im.close();
+  const exLong = EXPORT_SIZE[settings.exportSize] || 1920;
+  const exScale = Math.max(1, exLong / Math.max(card.w, card.h));
+  const c = document.createElement("canvas"); c.width = Math.round(card.w * exScale); c.height = Math.round(card.h * exScale);
+  const ctx = c.getContext("2d"); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(im, 0, 0, c.width, c.height); if (im && im.close) im.close();
   const b = await toBlob(c, "image/png", 1);
   downloadBlob(b, "dreamcamera-" + String(card.no).padStart(4, "0") + ".png");
-  setStatus("Still saved.");
+  setStatus("Still saved (" + c.width + "×" + c.height + ").");
 }
 function downloadBlob(blob, name) {
   // In the app the WebView ignores the download attribute, so hand the
@@ -820,6 +835,7 @@ function syncControls() {
   const map = { steps: "steps", lr: "lr", zoomFactor: "zoomFactor", range: "range", segFrames: "segFrames", frames: "frames", playFps: "playFps", playFpsOut: "playFpsOut", sharpen: "sharpen", octaves: "octaves", jitter: "jitter" };
   for (const id of Object.keys(map)) { const el = $(id); el.value = settings[map[id]]; const v = $(id + "Val"); if (v) v.textContent = fmtVal(id, settings[map[id]]); }
   $("path").value = settings.path; $("quality").value = settings.quality; $("ratio").value = settings.ratio || "1:1";
+  $("exportSize").value = settings.exportSize || "1080p";
   $("boomerang").value = settings.boomerang ? "1" : "0";
   $("facing").value = settings.facing; $("modelSrc").value = settings.modelSrc;
   applyRatio();
@@ -847,6 +863,8 @@ function initControls() {
   $("path").addEventListener("change", () => { settings.path = $("path").value; saveSettings(); });
   $("quality").value = settings.quality;
   $("quality").addEventListener("change", () => { settings.quality = $("quality").value; saveSettings(); });
+  $("exportSize").value = settings.exportSize || "1080p";
+  $("exportSize").addEventListener("change", () => { settings.exportSize = $("exportSize").value; saveSettings(); });
   $("ratio").value = settings.ratio || "1:1";
   $("ratio").addEventListener("change", () => { settings.ratio = $("ratio").value; saveSettings(); applyRatio(); });
   window.addEventListener("resize", applyRatio);
