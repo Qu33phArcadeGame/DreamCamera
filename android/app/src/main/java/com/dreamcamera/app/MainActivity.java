@@ -2,11 +2,15 @@ package com.dreamcamera.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
+import android.util.Base64;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
@@ -15,6 +19,7 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import java.io.OutputStream;
 
 // DreamCamera — WebView wrapper of the web app in assets/.
 // The page loads from file:///android_asset/ with file-URL access allowed,
@@ -36,6 +41,34 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void setLatestDream(String dataUrl) {
             DreamWidgetHelper.saveLatestDream(MainActivity.this, dataUrl);
+        }
+
+        // Called from the web app when the user saves a file (a dreamed
+        // video or a still): the page passes it as a data: URL. A WebView
+        // ignores the download attribute on its own, so the page hands the
+        // file to the app instead. Saved to Downloads via MediaStore
+        // (Android 10+) so it shows up in Files.
+        @JavascriptInterface
+        public void saveFile(String dataUrl, String filename, String mime) {
+            try {
+                if (dataUrl == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+                int comma = dataUrl.indexOf(',');
+                if (comma < 0) return;
+                byte[] bytes = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT);
+                if (mime == null || mime.isEmpty()) mime = "application/octet-stream";
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.MediaColumns.DISPLAY_NAME, filename);
+                v.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                if (uri == null) return;
+                OutputStream out = getContentResolver().openOutputStream(uri);
+                if (out == null) return;
+                out.write(bytes);
+                out.close();
+            } catch (Exception e) {
+                // A failed save must never break the app.
+            }
         }
     }
 
