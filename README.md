@@ -44,7 +44,7 @@ v1.6: the last two models, converted from Keras weights and gradient-verified �
 
 v1.7: long runs stay clean — the zoom now caps at 3x total magnification and the dream strength eases off as the run goes on, so it no longer turns into a grid of boxes past 50 frames. Higher resolutions (Ultra 768, Max 1024), photo ratios (1:1, 9:16, 16:9), progress bar moved below the Shoot button, subtle holographic buttons, 46 presets (4+ per model), and the model notes cleaned up.
 
-v1.10: fixed the video picker only showing photos — the app's file chooser hardcoded image/*, so tapping "Choose a video" opened a photo-only picker. It now uses the MIME type the page asked for, so the video picker shows videos and the photo pickers still show photos.
+v1.10: fixed the video picker only showing photos — the app's file chooser hardcoded image/*, so tapping "Choose a video" opened a photo-only picker. It now uses the MIME type the page asked for, so the video picker shows videos and the photo pickers still show photos. The zooming frame number and time estimate now sit right under the progress bar at the top of the settings, instead of buried at the bottom.
 
 v1.9: fixed the bottom settings panel not scrolling at all — the v1.8 tab wrapper broke the flex layout, so the settings grew past the screen and the bottom options (Engine, Continue, Upload, gallery) could not be swiped to. The tab panes are now proper flex columns, so the settings area gets a real height and scrolls under the pinned viewfinder, in both the Camera and Video tabs.
 
