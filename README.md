@@ -1,4 +1,4 @@
-# DreamCamera v1.10
+# DreamCamera v1.11
 
 Deepdream camera. Nothing else. No dreamlings, no game, no coins.
 
@@ -43,6 +43,8 @@ v1.5: three new models, all gradient-verified real — VGG19 (80 MB), ResNet50 (
 v1.6: the last two models, converted from Keras weights and gradient-verified — DenseNet121 (32 MB, new torch preprocessing) and InceptionResNetV2 (214 MB, graph model, fixed 299 — its layers version cannot load in TF.js). All 11 models real and bundled in the APK (~535 MB total).
 
 v1.7: long runs stay clean — the zoom now caps at 3x total magnification and the dream strength eases off as the run goes on, so it no longer turns into a grid of boxes past 50 frames. Higher resolutions (Ultra 768, Max 1024), photo ratios (1:1, 9:16, 16:9), progress bar moved below the Shoot button, subtle holographic buttons, 46 presets (4+ per model), and the model notes cleaned up.
+
+v1.11: the video Save button now works in the app — the WebView ignores the download attribute, so the page hands the file to the app, which saves it into Downloads (this also fixes the still photo/video Save buttons, which had the same bug). Videos are now capped at 15s (was 30s). Dreamweave goes deeper: the style photo now zooms in and dreams along with the video (extra inception), instead of staying a static overlay. More Video tab options: a Preset picker (Gentle / Dreamweave / Deep Inception / Photo Transfer), a Weave slider for how much of the last frame carries over, and a "Zoom in while dreaming" toggle for the video itself.
 
 v1.10: fixed the video picker only showing photos — the app's file chooser hardcoded image/*, so tapping "Choose a video" opened a photo-only picker. It now uses the MIME type the page asked for, so the video picker shows videos and the photo pickers still show photos. The zooming frame number and time estimate now sit right under the progress bar at the top of the settings, instead of buried at the bottom.
 
