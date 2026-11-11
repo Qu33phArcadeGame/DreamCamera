@@ -2,11 +2,15 @@ package com.dreamcamera.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.WindowManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -17,9 +21,23 @@ import android.webkit.WebViewClient;
 // so it can fetch the bundled models/ folder and the live model URLs.
 // getUserMedia needs the CAMERA runtime permission plus a
 // WebChromeClient that grants VIDEO_CAPTURE to the page.
+// Home screen widgets (DreamWidgetProvider 2x2, DreamWidgetLargeProvider
+// 3x3) show the latest dream frame; the page hands each finished dream
+// to the DreamCameraBridge below, which saves it and refreshes them.
 public class MainActivity extends Activity {
     private static final int REQ_CAMERA = 1;
+    private static final int REQ_FILE_CHOOSER = 2;
     private WebView webView;
+    private ValueCallback<Uri[]> filePathCallback;
+
+    // Called from the web app when a dream run finishes: the page passes
+    // the latest frame as a data: URL. Saved for the widgets to show.
+    private class DreamBridge {
+        @JavascriptInterface
+        public void setLatestDream(String dataUrl) {
+            DreamWidgetHelper.saveLatestDream(MainActivity.this, dataUrl);
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -48,13 +66,64 @@ public class MainActivity extends Activity {
                     request.deny();
                 }
             }
+
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
+                                             FileChooserParams params) {
+                // The page opens a file input (photo upload, style photo, or
+                // video). A WebView shows no picker on its own, so open one
+                // here — with the MIME type the page asked for. The old code
+                // hardcoded image/*, so the video picker only showed photos.
+                if (filePathCallback != null) filePathCallback.onReceiveValue(null);
+                filePathCallback = callback;
+                String type = "image/*";
+                String title = "Choose a photo";
+                String[] accept = params.getAcceptTypes();
+                if (accept != null && accept.length > 0 && accept[0] != null && !accept[0].isEmpty()) {
+                    type = accept[0];
+                    if (type.startsWith("video")) title = "Choose a video";
+                }
+                Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType(type);
+                startActivityForResult(Intent.createChooser(i, title), REQ_FILE_CHOOSER);
+                return true;
+            }
         });
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 && checkSelfPermission(Manifest.permission.CAMERA)
                         != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA);
         }
-        webView.loadUrl("file:///android_asset/index.html");
+        webView.addJavascriptInterface(new DreamBridge(), "DreamCameraBridge");
+        // A widget's Shoot & Dream button launches with autodream: the page
+        // starts a dream by itself once the camera is ready (see app.js).
+        boolean autodream = getIntent() != null && getIntent().getBooleanExtra("autodream", false);
+        webView.loadUrl("file:///android_asset/index.html" + (autodream ? "?autodream=1" : ""));
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        // The app is already open and a widget tap brought it forward:
+        // only a Shoot & Dream tap reloads the page to start a dream.
+        if (intent != null && intent.getBooleanExtra("autodream", false)) {
+            webView.loadUrl("file:///android_asset/index.html?autodream=1");
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int code, int result, Intent data) {
+        super.onActivityResult(code, result, data);
+        if (code == REQ_FILE_CHOOSER && filePathCallback != null) {
+            Uri[] results = null;
+            if (result == RESULT_OK && data != null && data.getData() != null) {
+                results = new Uri[]{data.getData()};
+            }
+            filePathCallback.onReceiveValue(results);
+            filePathCallback = null;
+        }
     }
 
     @Override
