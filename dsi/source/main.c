@@ -1,4 +1,4 @@
-// DreamCamera DSi — v2
+// DreamCamera DSi — v3
 // Top screen: plain camera viewfinder (no markings, just what the camera sees).
 // Bottom screen: settings, progress, gallery.
 // A / SHOOT: take a photo and dream it (tiny on-device dream, 50 frames max).
@@ -8,17 +8,21 @@
 //   blocksds/libnds "DSi Camera" docs (deepwiki) — REG_CAM_CNT 0x4004202,
 //   cameraStartTransfer(buffer, MCUREG_APT_SEQ_CMD_PREVIEW, ndma)
 //   snap-camera.neocities.org/dev — ARM7 I2C sensor setup, ARM9 NDMA capture
-// v2 FIX (black camera on real DSi, Nov 12): the preview is ONE captured
-// frame, not a stream. BlocksDS docs: wait until the NDMA transfer and the
-// camera transfer are finished, then start a NEW preview transfer for the
-// next frame. v1 started one transfer at boot and read the same buffer
-// forever, so the viewfinder froze on the first (dark, unsettled) frame
-// and saves came out black. v2 re-starts the preview every frame and
-// invalidates the ARM9 data cache over the buffer before reading it
-// (NDMA writes bypass the cache, so a stale cache reads black —
-// snap-camera docs say the same). Bottom screen now shows live camera
-// numbers (nz = nonzero pixels, max = brightest pixel, fr = frames
-// captured) so one photo proves whether the sensor is sending anything.
+// v3 FIX (camera still black on real DSi, Nov 12 — v2's diagnosis was
+// wrong): v2 waited for cameraTransferActive() to go false before reading
+// a frame. It never does. From libnds source (include/nds/arm9/camera.h):
+// cameraTransferActive() just reads the TRANSFER_ENABLE bit of REG_CAM_CNT,
+// and cameraStartTransfer SETS that bit — nothing in the transfer path
+// ever clears it. Only an explicit cameraStopTransfer() clears it. So v2's
+// cam_poll() returned on every call, fr stayed 0, the top screen kept
+// showing the boot test pattern (the rainbow rings in Coby's photo), and A
+// dreamed the stale dark boot frame (black). The sensor and NDMA were fine
+// all along: the buffer held a real frame at boot (nz 507). The ONLY true
+// completion signal is the NDMA busy bit (ndmaBusy), which the hardware
+// clears when the frame's words are written. v3 waits on ndmaBusy alone
+// and calls cameraStopTransfer() after each finished frame to clear the
+// latch. Bottom screen still shows live camera numbers (nz/max/fr) —
+// fr climbing is the proof the viewfinder is live.
 // HONEST LIMITS (see README.md): the DSi cannot run Inception/VGG
 // (12-29MB weights, 16MB RAM, 133MHz). The on-device dream is a tiny
 // fixed-kernel dream: edge-enhance + zoom + octaves at 256x192, frames to SD.
@@ -228,7 +232,7 @@ static void show_top(void) {
 static void draw_ui(void) {
     consoleSelect(&conSub); consoleClear();
     printf("\x1b[2J");
-    printf("DreamCamera DSi v2\n");
+    printf("DreamCamera DSi v3\n");
     printf("------------------\n");
     if (state == ST_VIEW) {
         printf("%s\n", camOk ? (camSel ? "Camera: OUTER" : "Camera: INNER") : "NO CAMERA: TEST PATTERN");
@@ -292,13 +296,23 @@ static bool camera_alive(void) {
     cam_sample_stats();
     return camNz > 4;
 }
+// Bounded wait for the in-flight NDMA frame to finish. ndmaBusy reads
+// bit 31 of the channel control register, which the hardware clears when
+// the frame's words are written — it is the only true completion signal.
+static void ndma_wait_idle(void) {
+    int w = 0;
+    while (ndmaBusy(3) && w++ < 120) swiWaitForVBlank();
+}
 // Preview pump: the preview is one captured frame, not a stream. When the
-// previous transfer is done, read the finished frame (cache-invalidate
-// first), show it, then start the next transfer. Call every frame.
+// NDMA has finished writing the frame, stop the transfer engine (this
+// clears the TRANSFER_ENABLE latch — cameraTransferActive() never clears
+// on its own), read the finished frame (cache-invalidate first), show it,
+// then start the next transfer. Call every frame.
 static void cam_poll(void) {
     if (!isDSi || !camOk) return;
-    if (ndmaBusy(3) || cameraTransferActive()) return;
+    if (ndmaBusy(3)) return;   // frame still streaming in
     if (transferPending) {
+        cameraStopTransfer();
         cam_sample_stats();
         rgb15_to_float(camBuf, img);
         float_to_rgb15(img, dispBuf);
@@ -334,12 +348,13 @@ static void run_dream(void) {
 }
 static void shoot(void) {
     if (camOk) {
-        // Freeze the preview: stop the in-flight transfer, wait for it
-        // to finish, then read the finished frame (cache-invalidate first).
-        // Reading camBuf mid-transfer tears, and reading it stale is black.
+        // Freeze the preview on a COMPLETE fresh frame: let the in-flight
+        // NDMA frame finish first, then stop the transfer engine and read
+        // it (cache-invalidate first). Stopping first can strand the NDMA
+        // mid-frame and leave a torn/dark capture; reading mid-transfer
+        // tears, and reading a stale frame is black.
+        ndma_wait_idle();
         camera_stop();
-        int w = 0;
-        while ((ndmaBusy(3) || cameraTransferActive()) && w++ < 120) swiWaitForVBlank();
         cam_sample_stats();
         rgb15_to_float(camBuf, img);
     }
@@ -381,14 +396,18 @@ int main(void) {
     if (isDSi) {
         camera_start();
         // give the sensor a moment, then wait for the first preview
-        // transfer to finish (bounded) before checking for real pixels
+        // transfer to finish (bounded, NDMA busy bit only) before
+        // checking for real pixels. Then clear the transfer-enable latch
+        // so cam_poll can cycle transfers from a clean state.
         for (int i = 0; i < 30; i++) swiWaitForVBlank();
-        int w = 0;
-        while ((ndmaBusy(3) || cameraTransferActive()) && w++ < 120) swiWaitForVBlank();
+        ndma_wait_idle();
+        cameraStopTransfer();
         camOk = camera_alive();
         if (!camOk) camera_stop();
     }
-    test_pattern(img, 0); float_to_rgb15(img, dispBuf); show_top();
+    // No camera: show the labelled test pattern. Camera OK: leave the top
+    // to cam_poll, which shows the first live frame on the first loop.
+    if (!camOk) { test_pattern(img, 0); float_to_rgb15(img, dispBuf); show_top(); }
     draw_ui();
 
     int selRow = 0, t = 0, uiTick = 0;
@@ -407,10 +426,11 @@ int main(void) {
             if (down & KEY_X) {
                 camSel = !camSel;
                 if (camOk) {
+                    ndma_wait_idle();
                     camera_stop(); camera_start();
                     for (int i = 0; i < 30; i++) swiWaitForVBlank();
-                    int w = 0;
-                    while ((ndmaBusy(3) || cameraTransferActive()) && w++ < 120) swiWaitForVBlank();
+                    ndma_wait_idle();
+                    cameraStopTransfer();
                     camOk = camera_alive();
                     if (!camOk) camera_stop();
                 }
@@ -430,7 +450,7 @@ int main(void) {
             // touch: bottom half = shoot, top strip = switch camera
             if (keysDown() & KEY_TOUCH) {
                 if (touch.py > 120) shoot();
-                else if (touch.py < 40) { camSel = !camSel; if (camOk) { camera_stop(); camera_start(); } draw_ui(); }
+                else if (touch.py < 40) { camSel = !camSel; if (camOk) { ndma_wait_idle(); camera_stop(); camera_start(); } draw_ui(); }
             }
         } else if (state == ST_DREAM) {
             if (down & KEY_B) stopDream = true;
