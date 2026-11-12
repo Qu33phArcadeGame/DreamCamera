@@ -1,14 +1,17 @@
 // Tiny CNN for DS: 24x24 input, 3 conv layers, fixed-point 16.16
 // The Dreamlings DS tiny CNN (Conv 3x3 1->8, 8->16, 16->16, all ReLU),
-// ported verbatim into DreamCamera DSi — the math is unchanged, only the
-// platform glue differs (libnds s32/s64 instead of local typedefs, and the
-// unused a3 visualization helper is dropped). Dreaming is gradient ascent
-// (backprop) on the best channel of the last layer.
+// ported verbatim into DreamCamera DSi — the math is unchanged. NOTE: this
+// file must NOT include <nds.h>: libnds defines s32 as long (int32_t),
+// but the weights are plain int, so s32 has to stay int here or the
+// compiler rejects the weight pointers. This file is pure arithmetic and
+// needs nothing from libnds.
 // DSi note: the camera frame is 256x192 RGB; main.c downscales it to this
 // 24x24 grayscale tile, dreams it here, and upscales the result back.
 
-#include <nds.h>
 #include "cnn_weights.h"
+
+typedef int s32;
+typedef long long s64;
 
 #define SZ 24
 #define C1 8
