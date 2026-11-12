@@ -1,4 +1,4 @@
-# DreamCamera v1.16
+# DreamCamera v1.17
 
 Deepdream camera. Nothing else. No dreamlings, no game, no coins.
 
@@ -43,6 +43,8 @@ v1.5: three new models, all gradient-verified real — VGG19 (80 MB), ResNet50 (
 v1.6: the last two models, converted from Keras weights and gradient-verified — DenseNet121 (32 MB, new torch preprocessing) and InceptionResNetV2 (214 MB, graph model, fixed 299 — its layers version cannot load in TF.js). All 11 models real and bundled in the APK (~535 MB total).
 
 v1.7: long runs stay clean — the zoom now caps at 3x total magnification and the dream strength eases off as the run goes on, so it no longer turns into a grid of boxes past 50 frames. Higher resolutions (Ultra 768, Max 1024), photo ratios (1:1, 9:16, 16:9), progress bar moved below the Shoot button, subtle holographic buttons, 46 presets (4+ per model), and the model notes cleaned up.
+
+v1.17: zentangledream — Coby's own model, a MobileNetV2 fine-tuned in Colab on his Instagram art (deepdream / zentangle / graphics / dreamlings, 352 images). The Colab converter couldn't install, so the .h5 was converted here and gradient-verified in TF.js 4.22.0 CPU — block_10/13/16 all 100% nonzero gradients, forward 224 gives 4 classes. All 12 models real and bundled in the APK (542 MB total), with 3 new presets (Zentangle drift / weave / bloom).
 
 v1.16: the zoom is capped at 50 frames per run again — it stops after 50, you switch the preset or model (or anything else), then Continue for 50 more, up to 500 total. The new model loads when you Continue, so the next 50 dream with it. Export size is new: saved videos and stills can now go up to 2K or 4K (720p / 1080p / 2K / 4K in settings). The dream itself still tops out at Max 1024 — a 2K/4K image through the model would take minutes a frame and run the phone out of memory — so 2K/4K is a true 2K/4K file, upscaled with high-quality filtering; sharpest if the dream was made at Max 1024.
 
