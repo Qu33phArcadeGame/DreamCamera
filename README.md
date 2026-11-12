@@ -1,4 +1,4 @@
-# DreamCamera v1.18
+# DreamCamera v1.19
 
 Deepdream camera. Nothing else. No dreamlings, no game, no coins.
 
@@ -43,6 +43,8 @@ v1.5: three new models, all gradient-verified real — VGG19 (80 MB), ResNet50 (
 v1.6: the last two models, converted from Keras weights and gradient-verified — DenseNet121 (32 MB, new torch preprocessing) and InceptionResNetV2 (214 MB, graph model, fixed 299 — its layers version cannot load in TF.js). All 11 models real and bundled in the APK (~535 MB total).
 
 v1.7: long runs stay clean — the zoom now caps at 3x total magnification and the dream strength eases off as the run goes on, so it no longer turns into a grid of boxes past 50 frames. Higher resolutions (Ultra 768, Max 1024), photo ratios (1:1, 9:16, 16:9), progress bar moved below the Shoot button, subtle holographic buttons, 46 presets (4+ per model), and the model notes cleaned up.
+
+v1.19: smooth past 50, for real this time — the jump came back because Continue started a run with the playback loop still live, so old frames and new frames fought over the same canvas. zoomRun now stops playback first. Dream strength (lr + sharpen) now eases with the zoom, so a long dream settles into a gentle drift instead of churning in place, and the playback tick only advances once the previous frame has landed, so frames can't overtake each other. Verified in TF.js with a 100-frame run (Inception v1): no NaN, depth 11.22x at frame 100, and frames 51-100 change 0.038 per frame vs 0.065 before (59%), falling to 0.020 by frames 76-100.
 
 v1.18: long dreams stay smooth — the zoom used to reset its magnification every 50 frames while the picture was already ~6x deep, so the true depth compounded 6x per run (35x by frame 100, 200x by frame 150) and the dream collapsed into glitch past 50. The working image and its depth now live across Continue runs, the zoom eases to a stop at 16x, the centre wanders smoothly instead of jumping, and the dream strength never fades out. Verified in TF.js with a 100-frame run (Inception v1): no NaN, and the second 50 frames change LESS per frame than the first (0.065 vs 0.084) — it settles instead of spazzing.
 
