@@ -498,7 +498,7 @@ async function decodeBlob(b) {
   const u = URL.createObjectURL(b); const im = await new Promise(res => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = u; }); URL.revokeObjectURL(u); return im;
 }
 async function pushFrame() { const b = await toBlob(artCv, "image/jpeg", 0.92); card.frames.push(b); }
-function disposeCard() { if (cur) { cur.dispose(); cur = null; } card = null; }
+function disposeCard() { if (cur) { cur.dispose(); cur = null; } resetDeep(); card = null; }
 function nextNumber() { let n = parseInt(localStorage.getItem(COUNT_KEY) || "0", 10) + 1; try { localStorage.setItem(COUNT_KEY, String(n)); } catch (e) {} return n; }
 
 // ===== SHOOT + DREAM =====
@@ -556,27 +556,54 @@ async function ensureCur() {
 // pixels it upscales the working image (up to 512px, or the card size if
 // bigger) so the dream always has fresh room to grow new layers. The zoom
 // centre wanders a little every frame, so the pattern never locks onto a grid.
+//
+// The working image and its magnification live across Continue runs. They
+// used to reset every 50 frames: the tracker restarted at 1x while the
+// picture was already ~6x deep, so the true depth compounded 6x per run
+// (35x by frame 100, 200x by frame 150) and the network ended up dreaming
+// on a speck of its own hallucination — that was the past-50 glitch. The
+// true depth now eases to a stop at 16x, so a long dream settles into a
+// smooth drift instead of collapsing.
 const ZOOM_CAP = 3;   // kept for loading old saves (zoomTotal); the zoom itself no longer caps
+const ZOOM_MAX = 16;  // total magnification vs the seed: the zoom eases to a stop here
+let deep = null, deepZoom = 1, viewDepth = 1, driftX = 0, driftY = 0, lastViewDepth = 1;
+function resetDeep() { if (deep) { deep.dispose(); deep = null; } deepZoom = 1; viewDepth = 1; driftX = 0; driftY = 0; lastViewDepth = 1; }
 async function zoomRun() {
   if (!card || busy || zooming || !card.frames.length) return;
   zooming = true; let failed = false, made = 0; updateUI();
   if (!await ensureReady()) { zooming = false; updateUI(); return; }   // loads the current model (in case it was switched between runs)
   const want = Math.max(1, Math.min(MAX_RUN, Math.round(settings.frames)));   // 50 frames per run; switch preset/model, Continue for 50 more, up to 500 total
   const DEEP_MAX = Math.max(512, Math.max(card.w, card.h));   // longest side the working image grows to
-  const DRIFT = 0.04;   // free-form wander: up to 4% of the size per frame
-  let deep = null, deepZoom = 1;
   try {
-    await ensureCur();   // cur = last frame
-    deep = cur; cur = null;
+    if (!deep) {
+      await ensureCur();   // cur = last frame (card size); only seeds when there is no live working image
+      deep = cur; cur = null;
+      // Magnification already baked into the seed: tracked on the card when
+      // present, else estimated from how many frames it took to get there.
+      viewDepth = (card.viewDepth && card.viewDepth > 1) ? card.viewDepth : Math.min(ZOOM_MAX, 1 + card.frames.length * 0.12);
+      lastViewDepth = viewDepth; deepZoom = 1; driftX = 0; driftY = 0;
+    }
     while (zooming && made < want && card.frames.length < TOTAL_MAX) {
       try {
         const h = deep.shape[1], w = deep.shape[2];
-        const ox = (Math.random() * 2 - 1) * DRIFT * w, oy = (Math.random() * 2 - 1) * DRIFT * h;
-        const z = zoomCrop(deep, settings.zoomFactor, ox, oy, (settings.sharpen || 0) / (1 + card.frames.length * 0.01));
+        // Ease the zoom to a stop as the true depth approaches the cap.
+        const ease = Math.max(0, 1 - viewDepth / ZOOM_MAX);
+        const zf = 1 - (1 - settings.zoomFactor) * ease;
+        // Smooth wander: the crop centre takes a small step each frame
+        // instead of jumping somewhere random (the old random jump each
+        // frame read as jitter once the view got deep).
+        driftX = Math.max(-1, Math.min(1, driftX + (Math.random() * 2 - 1) * 0.2));
+        driftY = Math.max(-1, Math.min(1, driftY + (Math.random() * 2 - 1) * 0.2));
+        const cw = Math.max(16, Math.round(w * zf)), ch = Math.max(16, Math.round(h * zf));
+        const ox = driftX * (w - cw) / 2, oy = driftY * (h - ch) / 2;
+        const z = zoomCrop(deep, zf, ox, oy, (settings.sharpen || 0) * (0.4 + 0.6 / (1 + card.frames.length * 0.01)));
         deep.dispose(); deep = z;
-        deepZoom = deepZoom / settings.zoomFactor;
+        viewDepth = viewDepth / zf;   // true depth: upscaling never reduces it, only zooming grows it
+        deepZoom = deepZoom / zf;
         const t0 = performance.now();
-        const lrEff = settings.lr / (1 + card.frames.length * 0.012);
+        // Dream strength eases down with total frames but never fades out:
+        // a long dream keeps dreaming, just gentler.
+        const lrEff = settings.lr * (0.35 + 0.65 / (1 + card.frames.length * 0.012));
         deep = dreamSteps(deep, lrEff, settings.steps, true);   // dream new layers in at this zoom
         // Ran out of pixels? Upscale so the dream has fresh room to grow.
         const longSide = Math.max(deep.shape[1], deep.shape[2]);
@@ -585,24 +612,26 @@ async function zoomRun() {
           const nh = Math.round(deep.shape[1] * ns / longSide), nw = Math.round(deep.shape[2] * ns / longSide);
           const up = tf.image.resizeBilinear(deep, [nh, nw]);
           deep.dispose(); deep = up;
-          deepZoom = deepZoom / 2;
+          deepZoom = deepZoom / (ns / longSide);   // honest accounting: the ratio it really grew by
         }
+        lastViewDepth = viewDepth; card.viewDepth = viewDepth;
         await tensorToCanvas(deep, artCv); noteStepTime((performance.now() - t0) / Math.max(1, settings.steps));
         await pushFrame(); made++;
-        setStatus("Zooming… frame " + made + " of " + want + " · " + Math.max(deep.shape[1], deep.shape[2]) + "px · " + card.frames.length + " total");
+        setStatus("Zooming… frame " + made + " of " + want + " · " + Math.max(deep.shape[1], deep.shape[2]) + "px · " + viewDepth.toFixed(1) + "× · " + card.frames.length + " total");
         setBar(made / want);
         await tf.nextFrame();
       } catch (e) {
         console.error(e); if (deep) { deep.dispose(); deep = null; }
         if (!(await nextEngine())) { setStatus("Zoom failed: " + (e && e.message || e), true); failed = true; break; }
         setStatus("Switched to " + LABEL[engineOrder[engineIdx]] + " — carrying on…");
-        await ensureCur(); deep = cur; cur = null; deepZoom = 1;
+        await ensureCur(); deep = cur; cur = null; viewDepth = lastViewDepth; deepZoom = 1; driftX = 0; driftY = 0;
       }
     }
   } catch (e) {
     console.error(e); setStatus("Zoom failed: " + (e && e.message || e), true); failed = true;
   }
-  if (deep) { deep.dispose(); deep = null; }
+  // deep is NOT disposed here — it lives on as the seed for Continue, with
+  // its magnification, so the next run picks up where this one left off.
   zooming = false; setBar(null);
   if (!failed) {
     if (card.frames.length >= TOTAL_MAX) setStatus("Full (" + TOTAL_MAX + " frames). Save it as a video!");
@@ -726,7 +755,7 @@ async function idbDo(mode, fn) { const db = await idb(); return new Promise((res
 async function keepInGallery() {
   if (!card || !card.frames.length) return;
   const thumb = card.frames[0];
-  const rec = { id: card.id, created: card.created, no: card.no, name: card.name, model: card.model, preset: card.preset, w: card.w, h: card.h, frames: card.frames.slice(), thumb: thumb, zoomTotal: card.zoomTotal, settings: card.settings };
+  const rec = { id: card.id, created: card.created, no: card.no, name: card.name, model: card.model, preset: card.preset, w: card.w, h: card.h, frames: card.frames.slice(), thumb: thumb, zoomTotal: card.zoomTotal, viewDepth: card.viewDepth, settings: card.settings };
   try { await idbDo("readwrite", st => st.put(rec)); setStatus("Kept in gallery."); renderGallery(); sendLatestDreamToWidget(); }
   catch (e) { setStatus("Couldn't keep it: " + (e && e.message || e), true); }
 }
@@ -749,7 +778,7 @@ async function renderGallery() {
       }
       if (busy || zooming) return;
       disposeCard(); stopPlaying();
-      card = { id: r.id, no: r.no, name: r.name, model: r.model, preset: r.preset, w: r.w, h: r.h, created: r.created, frames: r.frames.slice(), pathFrame: r.frames.length - 1, zoomTotal: (r.zoomTotal != null ? r.zoomTotal : ZOOM_CAP), settings: r.settings || settings };
+      card = { id: r.id, no: r.no, name: r.name, model: r.model, preset: r.preset, w: r.w, h: r.h, created: r.created, frames: r.frames.slice(), pathFrame: r.frames.length - 1, zoomTotal: (r.zoomTotal != null ? r.zoomTotal : ZOOM_CAP), viewDepth: r.viewDepth, settings: r.settings || settings };
       artCv.width = r.w; artCv.height = r.h;
       $("viewBox").classList.add("dreaming"); $("viewHint").textContent = "";
       setStatus(r.name + " · " + r.frames.length + " frames. Continue to dream further.");
