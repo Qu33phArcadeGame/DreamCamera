@@ -1,4 +1,4 @@
-// DreamCamera DSi — v1
+// DreamCamera DSi — v2
 // Top screen: plain camera viewfinder (no markings, just what the camera sees).
 // Bottom screen: settings, progress, gallery.
 // A / SHOOT: take a photo and dream it (tiny on-device dream, 50 frames max).
@@ -8,6 +8,17 @@
 //   blocksds/libnds "DSi Camera" docs (deepwiki) — REG_CAM_CNT 0x4004202,
 //   cameraStartTransfer(buffer, MCUREG_APT_SEQ_CMD_PREVIEW, ndma)
 //   snap-camera.neocities.org/dev — ARM7 I2C sensor setup, ARM9 NDMA capture
+// v2 FIX (black camera on real DSi, Nov 12): the preview is ONE captured
+// frame, not a stream. BlocksDS docs: wait until the NDMA transfer and the
+// camera transfer are finished, then start a NEW preview transfer for the
+// next frame. v1 started one transfer at boot and read the same buffer
+// forever, so the viewfinder froze on the first (dark, unsettled) frame
+// and saves came out black. v2 re-starts the preview every frame and
+// invalidates the ARM9 data cache over the buffer before reading it
+// (NDMA writes bypass the cache, so a stale cache reads black —
+// snap-camera docs say the same). Bottom screen now shows live camera
+// numbers (nz = nonzero pixels, max = brightest pixel, fr = frames
+// captured) so one photo proves whether the sensor is sending anything.
 // HONEST LIMITS (see README.md): the DSi cannot run Inception/VGG
 // (12-29MB weights, 16MB RAM, 133MHz). The on-device dream is a tiny
 // fixed-kernel dream: edge-enhance + zoom + octaves at 256x192, frames to SD.
@@ -16,6 +27,8 @@
 // pattern instead of pretending — the dream still works on it.
 #include <nds.h>
 #include <nds/camera.h>
+#include <nds/ndma.h>
+#include <nds/arm9/cache.h>
 #include <fat.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,9 +57,12 @@ static int frameCount = 0, pathFrame = 0, dreamNo = 0;
 static int galCount = 0, galIdx = 0;
 static char galNames[64][16];
 static float *img = NULL, *tmp = NULL;   // RGB float buffers, 256x192x3
-static u16 *camBuf = NULL;                // camera preview buffer
+static u16 camBufAligned[NPIX] __attribute__((aligned(32)));
+static u16 *camBuf = NULL;                // camera preview buffer (32B-aligned: NDMA target, cache-invalidate needs it)
 static u16 *dispBuf = NULL;               // top-screen framebuffer copy
 static bool stopDream = false;
+static bool transferPending = false;      // a preview transfer is in flight
+static int camNz = 0, camMax = 0, camFrames = 0;  // live camera diagnostics
 
 static const char *PATH_NAMES[3] = { "Straight", "Square", "Triangle" };
 static const char *STR_NAMES[3] = { "Gentle", "Medium", "Wild" };
@@ -212,11 +228,12 @@ static void show_top(void) {
 static void draw_ui(void) {
     consoleSelect(&conSub); consoleClear();
     printf("\x1b[2J");
-    printf("DreamCamera DSi v1\n");
+    printf("DreamCamera DSi v2\n");
     printf("------------------\n");
     if (state == ST_VIEW) {
         printf("%s\n", camOk ? (camSel ? "Camera: OUTER" : "Camera: INNER") : "NO CAMERA: TEST PATTERN");
         printf("SD: %s\n", sdOk ? "ok" : "no card");
+        printf("DSi:%d nz:%d max:%04x fr:%d\n", isDSi, camNz, camMax, camFrames);
         printf("\n");
         printf("A / SHOOT: take photo\n");
         printf("X: switch camera\n");
@@ -255,13 +272,42 @@ static void camera_start(void) {
     cameraSelect(camSel ? CAMERA_OUTER : CAMERA_INNER);
     memset(camBuf, 0, NPIX * 2);
     cameraStartTransfer(camBuf, MCUREG_APT_SEQ_CMD_PREVIEW, 3);
+    transferPending = true;
 }
-static void camera_stop(void) { if (isDSi) cameraStopTransfer(); }
+static void camera_stop(void) { if (isDSi) { cameraStopTransfer(); transferPending = false; } }
+// Sample the preview buffer: invalidate the ARM9 data cache first, because
+// NDMA writes bypass the cache and a stale cache reads black.
+static void cam_sample_stats(void) {
+    DC_InvalidateRange(camBuf, NPIX * 2);
+    int nz = 0, mx = 0;
+    for (int i = 0; i < NPIX; i += 97) {
+        u16 p = camBuf[i];
+        if (p) nz++;
+        if (p > mx) mx = p;
+    }
+    camNz = nz; camMax = mx;
+}
 // Has the preview buffer got real pixels yet?
 static bool camera_alive(void) {
-    int nz = 0;
-    for (int i = 0; i < NPIX; i += 97) if (camBuf[i]) nz++;
-    return nz > 4;
+    cam_sample_stats();
+    return camNz > 4;
+}
+// Preview pump: the preview is one captured frame, not a stream. When the
+// previous transfer is done, read the finished frame (cache-invalidate
+// first), show it, then start the next transfer. Call every frame.
+static void cam_poll(void) {
+    if (!isDSi || !camOk) return;
+    if (ndmaBusy(3) || cameraTransferActive()) return;
+    if (transferPending) {
+        cam_sample_stats();
+        rgb15_to_float(camBuf, img);
+        float_to_rgb15(img, dispBuf);
+        show_top();
+        camFrames++;
+        transferPending = false;
+    }
+    cameraStartTransfer(camBuf, MCUREG_APT_SEQ_CMD_PREVIEW, 3);
+    transferPending = true;
 }
 
 // ---------- dream run ----------
@@ -287,7 +333,16 @@ static void run_dream(void) {
     state = ST_DONE; draw_ui();
 }
 static void shoot(void) {
-    if (camOk) rgb15_to_float(camBuf, img);
+    if (camOk) {
+        // Freeze the preview: stop the in-flight transfer, wait for it
+        // to finish, then read the finished frame (cache-invalidate first).
+        // Reading camBuf mid-transfer tears, and reading it stale is black.
+        camera_stop();
+        int w = 0;
+        while ((ndmaBusy(3) || cameraTransferActive()) && w++ < 120) swiWaitForVBlank();
+        cam_sample_stats();
+        rgb15_to_float(camBuf, img);
+    }
     else test_pattern(img, 0);
     dreamNo++;
     // count existing dreams so numbers don't clash; skip taken numbers
@@ -315,7 +370,7 @@ int main(void) {
 
     img = (float *)malloc(NPIX * 3 * sizeof(float));
     tmp = (float *)malloc(NPIX * 3 * sizeof(float));
-    camBuf = (u16 *)malloc(NPIX * 2);
+    camBuf = camBufAligned;
     dispBuf = (u16 *)malloc(NPIX * 2);
     memset(dispBuf, 0, NPIX * 2);
 
@@ -325,15 +380,18 @@ int main(void) {
 
     if (isDSi) {
         camera_start();
-        // give the sensor a moment, then check for real pixels
+        // give the sensor a moment, then wait for the first preview
+        // transfer to finish (bounded) before checking for real pixels
         for (int i = 0; i < 30; i++) swiWaitForVBlank();
+        int w = 0;
+        while ((ndmaBusy(3) || cameraTransferActive()) && w++ < 120) swiWaitForVBlank();
         camOk = camera_alive();
         if (!camOk) camera_stop();
     }
     test_pattern(img, 0); float_to_rgb15(img, dispBuf); show_top();
     draw_ui();
 
-    int selRow = 0, t = 0;
+    int selRow = 0, t = 0, uiTick = 0;
     for (;;) {
         swiWaitForVBlank();
         scanKeys();
@@ -341,12 +399,21 @@ int main(void) {
         touchPosition touch; touchRead(&touch);
 
         if (state == ST_VIEW) {
-            if (camOk) { rgb15_to_float(camBuf, img); float_to_rgb15(img, dispBuf); show_top(); }
+            if (camOk) { cam_poll(); }
             else { test_pattern(img, t++); float_to_rgb15(img, dispBuf); show_top(); }
+            // refresh the live camera numbers a couple of times a second
+            if ((++uiTick % 30) == 0) draw_ui();
             if (down & KEY_A) shoot();
             if (down & KEY_X) {
                 camSel = !camSel;
-                if (camOk) { camera_stop(); camera_start(); for (int i = 0; i < 30; i++) swiWaitForVBlank(); camOk = camera_alive(); if (!camOk) camera_stop(); }
+                if (camOk) {
+                    camera_stop(); camera_start();
+                    for (int i = 0; i < 30; i++) swiWaitForVBlank();
+                    int w = 0;
+                    while ((ndmaBusy(3) || cameraTransferActive()) && w++ < 120) swiWaitForVBlank();
+                    camOk = camera_alive();
+                    if (!camOk) camera_stop();
+                }
                 draw_ui();
             }
             if (down & KEY_Y) { state = ST_GALLERY; scan_gallery(); draw_ui(); }
