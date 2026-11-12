@@ -1,4 +1,4 @@
-# DreamCamera v1.17
+# DreamCamera v1.18
 
 Deepdream camera. Nothing else. No dreamlings, no game, no coins.
 
@@ -43,6 +43,8 @@ v1.5: three new models, all gradient-verified real — VGG19 (80 MB), ResNet50 (
 v1.6: the last two models, converted from Keras weights and gradient-verified — DenseNet121 (32 MB, new torch preprocessing) and InceptionResNetV2 (214 MB, graph model, fixed 299 — its layers version cannot load in TF.js). All 11 models real and bundled in the APK (~535 MB total).
 
 v1.7: long runs stay clean — the zoom now caps at 3x total magnification and the dream strength eases off as the run goes on, so it no longer turns into a grid of boxes past 50 frames. Higher resolutions (Ultra 768, Max 1024), photo ratios (1:1, 9:16, 16:9), progress bar moved below the Shoot button, subtle holographic buttons, 46 presets (4+ per model), and the model notes cleaned up.
+
+v1.18: long dreams stay smooth — the zoom used to reset its magnification every 50 frames while the picture was already ~6x deep, so the true depth compounded 6x per run (35x by frame 100, 200x by frame 150) and the dream collapsed into glitch past 50. The working image and its depth now live across Continue runs, the zoom eases to a stop at 16x, the centre wanders smoothly instead of jumping, and the dream strength never fades out. Verified in TF.js with a 100-frame run (Inception v1): no NaN, and the second 50 frames change LESS per frame than the first (0.065 vs 0.084) — it settles instead of spazzing.
 
 v1.17: zentangledream — Coby's own model, a MobileNetV2 fine-tuned in Colab on his Instagram art (deepdream / zentangle / graphics / dreamlings, 352 images). The Colab converter couldn't install, so the .h5 was converted here and gradient-verified in TF.js 4.22.0 CPU — block_10/13/16 all 100% nonzero gradients, forward 224 gives 4 classes. All 12 models real and bundled in the APK (542 MB total), with 3 new presets (Zentangle drift / weave / bloom).
 
