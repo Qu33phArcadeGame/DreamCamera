@@ -24,8 +24,8 @@ try { tf.env().set("WEBGL_FORCE_F16_TEXTURES", true); } catch (e) {}
 // InceptionResNetV2 (graph model — its layers version cannot load, the
 // residual blocks use a custom layer TF.js rejects). New in v1.17 (converted
 // 2026-11-11, real gradients verified in TF.js 4.22.0 CPU): zentangledream —
-// Coby's own MobileNetV2, fine-tuned in Colab on his Instagram art
-// (deepdream / zentangle / graphics / dreamlings), fixed 224, v2 preprocessing.
+// MobileNetV2, fine-tuned in Colab on Instagram art
+// (deepdream / Zentangle / graphics / dreamlings), fixed 224, v2 preprocessing.
 // All 12 models real.
 const LIVE_BASE = "https://qu33pharcadegame.github.io/DeepdreamlingsFusion/models/";
 const MODELS = {
@@ -64,7 +64,7 @@ const MODELS = {
     pref: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu"], note: "Inception + residual. Rich, layered dreams." },
   zentangledream: { short: "zentangledream", label: "zentangledream", kind: "layers", live: "https://raw.githubusercontent.com/Qu33phArcadeGame/DreamCamera/main/web/models/zentangledream/model.json", local: "models/zentangledream/model.json", pre: "v2", fixedSize: 224,
     layers: ["block_10_project_BN", "block_13_project_BN", "block_16_project_BN"],
-    pref: ["block_13_project_BN"], note: "Coby's own model — MobileNetV2 fine-tuned on his Instagram art. Dreams in his style." },
+    pref: ["block_13_project_BN"], note: "Zentangle art — MobileNetV2 fine-tuned on Instagram art." },
 };
 const COMING_SOON = [];
 // Per-model pixel math (same as the Dreamlings generator).
