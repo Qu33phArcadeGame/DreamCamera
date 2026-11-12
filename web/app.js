@@ -22,7 +22,11 @@ try { tf.env().set("WEBGL_FORCE_F16_TEXTURES", true); } catch (e) {}
 // EfficientNetB0 — all three bundled in the APK. New in v1.6 (converted
 // from Keras weights 2026-11-10, real gradients verified): DenseNet121,
 // InceptionResNetV2 (graph model — its layers version cannot load, the
-// residual blocks use a custom layer TF.js rejects). All 11 models real.
+// residual blocks use a custom layer TF.js rejects). New in v1.17 (converted
+// 2026-11-11, real gradients verified in TF.js 4.22.0 CPU): zentangledream —
+// Coby's own MobileNetV2, fine-tuned in Colab on his Instagram art
+// (deepdream / zentangle / graphics / dreamlings), fixed 224, v2 preprocessing.
+// All 12 models real.
 const LIVE_BASE = "https://qu33pharcadegame.github.io/DeepdreamlingsFusion/models/";
 const MODELS = {
   v1: { short: "v1", label: "Inception v1", kind: "graph", live: LIVE_BASE + "inceptionv1/model.json", local: "models/inceptionv1/model.json", pre: "v1",
@@ -58,6 +62,9 @@ const MODELS = {
   inceptionresnetv2: { short: "inceptionresnetv2", label: "InceptionResNetV2", kind: "graph", live: "https://raw.githubusercontent.com/Qu33phArcadeGame/DreamCamera/main/web/models/inceptionresnetv2/model.json", local: "models/inceptionresnetv2/model.json", pre: "v2", trustLayers: true, fixedSize: 299,
     layers: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_18_ac/Relu"],
     pref: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu"], note: "Inception + residual. Rich, layered dreams." },
+  zentangledream: { short: "zentangledream", label: "zentangledream", kind: "layers", live: "https://raw.githubusercontent.com/Qu33phArcadeGame/DreamCamera/main/web/models/zentangledream/model.json", local: "models/zentangledream/model.json", pre: "v2", fixedSize: 224,
+    layers: ["block_10_project_BN", "block_13_project_BN", "block_16_project_BN"],
+    pref: ["block_13_project_BN"], note: "Coby's own model — MobileNetV2 fine-tuned on his Instagram art. Dreams in his style." },
 };
 const COMING_SOON = [];
 // Per-model pixel math (same as the Dreamlings generator).
@@ -172,6 +179,9 @@ const PRESETS = [
   { m: "densenet121", name: "Dense early", s: { path: "wave", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.10, segFrames: 8, sharpen: 0.35, layers: ["conv3_block12_concat", "conv4_block24_concat"] } },
   { m: "inceptionresnetv2", name: "IRv2 full", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 12, lr: 0.05, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_10_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block17_18_ac/Relu"] } },
   { m: "inceptionresnetv2", name: "IRv2 deep", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["StatefulPartitionedCall/inception_resnet_v2/block17_18_ac/Relu", "StatefulPartitionedCall/inception_resnet_v2/block35_10_ac/Relu"] } },
+  { m: "zentangledream", name: "Zentangle drift", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["block_13_project_BN"] } },
+  { m: "zentangledream", name: "Zentangle weave", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["block_10_project_BN", "block_13_project_BN"] } },
+  { m: "zentangledream", name: "Zentangle bloom", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["block_16_project_BN"] } },
 ];
 const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live", exportSize: "1080p" };
 
