@@ -1,4 +1,4 @@
-// DreamCamera DSi — v3
+// DreamCamera DSi — v4
 // Top screen: plain camera viewfinder (no markings, just what the camera sees).
 // Bottom screen: settings, progress, gallery.
 // A / SHOOT: take a photo and dream it (tiny on-device dream, 50 frames max).
@@ -23,12 +23,26 @@
 // and calls cameraStopTransfer() after each finished frame to clear the
 // latch. Bottom screen still shows live camera numbers (nz/max/fr) —
 // fr climbing is the proof the viewfinder is live.
+// v4 (real neural dream, Nov 12): the v1-v3 dream was a fixed 3x3
+// edge-enhance kernel, not a neural net. v4 ports the Dreamlings DS tiny
+// CNN in (cnn.c, verbatim math): 24x24 grayscale in, Conv 3x3 1->8, 8->16,
+// 16->16, all ReLU, 16.16 fixed point; dreaming is gradient ascent on the
+// best channel of the last layer. Per dream frame the 256x192 photo is
+// downscaled to a 24x24 gray tile, dreamed 1-3 steps, then the dreamed tile
+// is upscaled and applied as luminance over the photo's own colors. The
+// zoom still runs every frame, so the CNN sees a closer and closer crop as
+// the dream goes on. HONEST LIMIT: the CNN only ever sees 24x24, so the
+// dream is soft/chunky at full screen — that is the tiny net's real size,
+// not a bug. One CNN step is ~0.2s on DSi, so a 50-frame dream is ~15-20s;
+// use Frames 10/25 for a faster one. Steps = CNN steps per frame (1-3),
+// Dream strength = step size per iteration (Gentle 4 / Medium 8 / Wild 16).
 // HONEST LIMITS (see README.md): the DSi cannot run Inception/VGG
-// (12-29MB weights, 16MB RAM, 133MHz). The on-device dream is a tiny
-// fixed-kernel dream: edge-enhance + zoom + octaves at 256x192, frames to SD.
-// The full neural dream is the web app. If the camera does not answer
-// (DS mode, emulator, no DSi), the viewfinder shows a labelled test
-// pattern instead of pretending — the dream still works on it.
+// (12-29MB weights, 16MB RAM, 133MHz). The on-device dream is the Dreamlings
+// DS tiny CNN (24x24, 3 conv layers, gradient ascent), not Inception —
+// frames save to SD at 256x192. The full neural dream is the web app.
+// If the camera does not answer (DS mode, emulator, no DSi), the viewfinder
+// shows a labelled test pattern instead of pretending — the dream still
+// works on it.
 #include <nds.h>
 #include <nds/camera.h>
 #include <nds/ndma.h>
@@ -40,6 +54,7 @@
 #include <math.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include "cnn.h"
 
 #define W 256
 #define H 192
@@ -56,7 +71,9 @@ static int dreamStr = 1;            // 0 gentle, 1 medium, 2 wild
 static float zoomF = 0.97f;
 static int pathSel = 0;             // 0 straight, 1 square, 2 triangle
 static int framesWanted = 50;
-static int octaves = 3;
+static int cnnSteps = 1;            // CNN dream steps per frame (1-3)
+static unsigned char cnnTile[24 * 24];  // 24x24 gray tile the CNN dreams on
+static int cnnCh = 0;               // current best channel of the CNN's last layer
 static int frameCount = 0, pathFrame = 0, dreamNo = 0;
 static int galCount = 0, galIdx = 0;
 static char galNames[64][16];
@@ -70,7 +87,7 @@ static int camNz = 0, camMax = 0, camFrames = 0;  // live camera diagnostics
 
 static const char *PATH_NAMES[3] = { "Straight", "Square", "Triangle" };
 static const char *STR_NAMES[3] = { "Gentle", "Medium", "Wild" };
-static const float STR_VAL[3] = { 0.35f, 0.7f, 1.2f };
+static const int STR_STEP[3] = { 4, 8, 16 };  // CNN max pixel change per iteration
 
 // ---------- tiny dream ----------
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -91,29 +108,66 @@ static void float_to_rgb15(const float *src, u16 *dst) {
         dst[i] = (u16)(r | (g << 5) | (b << 10) | 0x8000);
     }
 }
-// One dream step: 3x3 box blur, then push away from the blur (edge/texture
-// enhance — the same idea as gradient ascent, with a fixed kernel instead
-// of a neural net). Deterministic, fast, fits in DSi RAM.
-static void dream_step(float *im, float strength) {
+// ---------- tiny-CNN dream (v4) ----------
+// The CNN only sees a 24x24 grayscale tile. Per dream frame: downscale the
+// full-res photo to the tile, run gradient ascent on it, upscale the dreamed
+// tile and apply it as luminance over the photo's own colors.
+static void downscale_to_tile(void) {
+    for (int ty = 0; ty < 24; ty++) {
+        int y0 = ty * H / 24, y1 = (ty + 1) * H / 24;
+        for (int tx = 0; tx < 24; tx++) {
+            int x0 = tx * W / 24, x1 = (tx + 1) * W / 24;
+            float sum = 0; int n = 0;
+            for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+                const float *p = &img[(y * W + x) * 3];
+                sum += p[0] + p[1] + p[2]; n++;
+            }
+            float g = n ? sum / (3.0f * n) : 0;
+            cnnTile[ty * 24 + tx] = (unsigned char)clampf(g, 0, 255);
+        }
+    }
+}
+// Bilinear sample of the dreamed tile at full-res pixel (x, y).
+static float tile_sample(int x, int y) {
+    float fx = (float)x * 23.0f / (W - 1), fy = (float)y * 23.0f / (H - 1);
+    int x0 = (int)fx, y0 = (int)fy;
+    if (x0 > 22) x0 = 22;
+    if (y0 > 22) y0 = 22;
+    float dx = fx - x0, dy = fy - y0;
+    float v00 = cnnTile[y0 * 24 + x0], v10 = cnnTile[y0 * 24 + x0 + 1];
+    float v01 = cnnTile[(y0 + 1) * 24 + x0], v11 = cnnTile[(y0 + 1) * 24 + x0 + 1];
+    float top = v00 + (v10 - v00) * dx, bot = v01 + (v11 - v01) * dx;
+    return top + (bot - top) * dy;
+}
+// Apply the dreamed tile as luminance: keep each pixel's hue, impose the
+// dreamed brightness. Near-black pixels get the dreamed gray directly so
+// the scale factor can't blow up.
+static void cnn_luminance_apply(void) {
     for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
-            for (int c = 0; c < 3; c++) {
-                float sum = 0; int n = 0;
-                for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
-                    int xx = x + dx, yy = y + dy;
-                    if (xx < 0) xx = 0;
-                    if (xx >= W) xx = W - 1;
-                    if (yy < 0) yy = 0;
-                    if (yy >= H) yy = H - 1;
-                    sum += im[(yy * W + xx) * 3 + c]; n++;
-                }
-                float blur = sum / n;
-                float v = im[(y * W + x) * 3 + c];
-                tmp[(y * W + x) * 3 + c] = clampf(v + (v - blur) * strength, 0, 255);
+            float *p = &img[(y * W + x) * 3];
+            float dreamed = tile_sample(x, y);
+            float lum = (p[0] + p[1] + p[2]) / 3.0f;
+            if (lum < 4.0f) {
+                p[0] = p[1] = p[2] = dreamed;
+            } else {
+                float s = dreamed / lum;
+                if (s > 4.0f) s = 4.0f;
+                p[0] = clampf(p[0] * s, 0, 255);
+                p[1] = clampf(p[1] * s, 0, 255);
+                p[2] = clampf(p[2] * s, 0, 255);
             }
         }
     }
-    memcpy(im, tmp, NPIX * 3 * sizeof(float));
+}
+// One frame's CNN dream: downscale, gradient-ascent steps on the best
+// channel, re-pick the best channel, apply as luminance.
+static void cnn_dream_frame(void) {
+    downscale_to_tile();
+    for (int i = 0; i < cnnSteps; i++)
+        cnn_dream_step(cnnTile, cnnCh, STR_STEP[dreamStr]);
+    cnnCh = cnn_best_channel();
+    cnn_luminance_apply();
 }
 // Zoom one frame: crop around a centre that walks the chosen path, scale back.
 static void zoom_frame(float *im, float zf, int n) {
@@ -143,28 +197,6 @@ static void zoom_frame(float *im, float zf, int n) {
     }
     memcpy(im, tmp, NPIX * 3 * sizeof(float));
 }
-// One octave pass at half size, then back up (nearest neighbour).
-static void octave_pass(float *im, float strength) {
-    static float half[128 * 96 * 3];
-    for (int y = 0; y < 96; y++) for (int x = 0; x < 128; x++)
-        for (int c = 0; c < 3; c++) half[(y * 128 + x) * 3 + c] = im[((y * 2) * W + x * 2) * 3 + c];
-    // dream the half-size image in place via tmp
-    for (int y = 0; y < 96; y++) for (int x = 0; x < 128; x++) for (int c = 0; c < 3; c++) {
-        float sum = 0; int n = 0;
-        for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
-            int xx = x + dx, yy = y + dy;
-            if (xx < 0) xx = 0;
-            if (xx >= 128) xx = 127;
-            if (yy < 0) yy = 0;
-            if (yy >= 96) yy = 95;
-            sum += half[(yy * 128 + xx) * 3 + c]; n++;
-        }
-        float blur = sum / n, v = half[(y * 128 + x) * 3 + c];
-        tmp[(y * 128 + x) * 3 + c] = clampf(v + (v - blur) * strength, 0, 255);
-    }
-    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++)
-        for (int c = 0; c < 3; c++) im[(y * W + x) * 3 + c] = tmp[((y / 2) * 128 + (x / 2)) * 3 + c];
-}
 
 // ---------- test pattern (no camera) ----------
 static void test_pattern(float *dst, int t) {
@@ -192,7 +224,7 @@ static void save_frame(int n) {
     if (n == 0) {
         snprintf(fn, sizeof(fn), "%s/info.txt", dir);
         f = fopen(fn, "w");
-        if (f) { fprintf(f, "DreamCamera DSi dream %04d\nframes=%d\nstrength=%s\nzoom=%.3f\npath=%s\noctaves=%d\n", dreamNo, frameCount, STR_NAMES[dreamStr], zoomF, PATH_NAMES[pathSel], octaves); fclose(f); }
+        if (f) { fprintf(f, "DreamCamera DSi dream %04d\nframes=%d\nstrength=%s\nzoom=%.3f\npath=%s\nsteps=%d\n", dreamNo, frameCount, STR_NAMES[dreamStr], zoomF, PATH_NAMES[pathSel], cnnSteps); fclose(f); }
     }
 }
 static void scan_gallery(void) {
@@ -232,7 +264,7 @@ static void show_top(void) {
 static void draw_ui(void) {
     consoleSelect(&conSub); consoleClear();
     printf("\x1b[2J");
-    printf("DreamCamera DSi v3\n");
+    printf("DreamCamera DSi v4\n");
     printf("------------------\n");
     if (state == ST_VIEW) {
         printf("%s\n", camOk ? (camSel ? "Camera: OUTER" : "Camera: INNER") : "NO CAMERA: TEST PATTERN");
@@ -248,7 +280,8 @@ static void draw_ui(void) {
         printf("> Dream %s\n", STR_NAMES[dreamStr]);
         printf("> Zoom %.3f\n", zoomF);
         printf("> Path %s\n", PATH_NAMES[pathSel]);
-        printf("> Frames %d  Octaves %d\n", framesWanted, octaves);
+        printf("> Frames %d\n", framesWanted);
+        printf("> Steps %d\n", cnnSteps);
     } else if (state == ST_DREAM) {
         printf("Dreaming... %d / %d\n", frameCount, framesWanted);
         printf("frame %d total\n", frameCount);
@@ -329,15 +362,10 @@ static void run_dream(void) {
     state = ST_DREAM; stopDream = false; draw_ui();
     int want = framesWanted;
     if (frameCount + want > TOTAL_MAX) want = TOTAL_MAX - frameCount;
-    float strength = STR_VAL[dreamStr];
     for (int f = 0; f < want && !stopDream; f++) {
         pathFrame++;
         zoom_frame(img, zoomF, pathFrame);
-        for (int o = 0; o < octaves; o++) {
-            if (o == 0) octave_pass(img, strength);
-            else dream_step(img, strength);
-        }
-        dream_step(img, strength);
+        cnn_dream_frame();
         frameCount++;
         float_to_rgb15(img, dispBuf); show_top();
         save_frame(frameCount - 1);
@@ -359,6 +387,11 @@ static void shoot(void) {
         rgb15_to_float(camBuf, img);
     }
     else test_pattern(img, 0);
+    // Pick the CNN's best channel from this photo (like the DS game does
+    // from the selected dreamling) so the first frame dreams on it.
+    downscale_to_tile();
+    cnn_forward(cnnTile);
+    cnnCh = cnn_best_channel();
     dreamNo++;
     // count existing dreams so numbers don't clash; skip taken numbers
     if (sdOk) {
@@ -437,14 +470,15 @@ int main(void) {
                 draw_ui();
             }
             if (down & KEY_Y) { state = ST_GALLERY; scan_gallery(); draw_ui(); }
-            if (down & KEY_UP) { selRow = (selRow + 3) % 4; draw_ui(); }
-            if (down & KEY_DOWN) { selRow = (selRow + 1) % 4; draw_ui(); }
+            if (down & KEY_UP) { selRow = (selRow + 4) % 5; draw_ui(); }
+            if (down & KEY_DOWN) { selRow = (selRow + 1) % 5; draw_ui(); }
             if (down & KEY_LEFT || down & KEY_RIGHT) {
                 int d = (down & KEY_RIGHT) ? 1 : -1;
                 if (selRow == 0) { dreamStr = (dreamStr + d + 3) % 3; }
                 else if (selRow == 1) { float z[3] = { 0.99f, 0.97f, 0.95f }; int cur = (zoomF > 0.98f) ? 0 : (zoomF > 0.96f) ? 1 : 2; cur = (cur + d + 3) % 3; zoomF = z[cur]; }
                 else if (selRow == 2) { pathSel = (pathSel + d + 3) % 3; }
-                else { int f[3] = { 10, 25, 50 }; int cur = (framesWanted <= 10) ? 0 : (framesWanted <= 25) ? 1 : 2; cur = (cur + d + 3) % 3; framesWanted = f[cur]; }
+                else if (selRow == 3) { int f[3] = { 10, 25, 50 }; int cur = (framesWanted <= 10) ? 0 : (framesWanted <= 25) ? 1 : 2; cur = (cur + d + 3) % 3; framesWanted = f[cur]; }
+                else { cnnSteps = ((cnnSteps - 1 + d + 3) % 3) + 1; }
                 draw_ui();
             }
             // touch: bottom half = shoot, top strip = switch camera
