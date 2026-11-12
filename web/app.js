@@ -564,13 +564,20 @@ async function ensureCur() {
 // on a speck of its own hallucination — that was the past-50 glitch. The
 // true depth now eases to a stop at 16x, so a long dream settles into a
 // smooth drift instead of collapsing.
+// v1.19: the past-50 jump was still there — Continue started a run with
+// the playback loop still live, so old frames and new frames fought over
+// the canvas. zoomRun now stops playback first. Dream strength also eases
+// with the zoom (lr + sharpen scale with the ease), and the playback tick
+// only advances once the previous frame has landed, so frames can't
+// overtake each other.
 const ZOOM_CAP = 3;   // kept for loading old saves (zoomTotal); the zoom itself no longer caps
 const ZOOM_MAX = 16;  // total magnification vs the seed: the zoom eases to a stop here
 let deep = null, deepZoom = 1, viewDepth = 1, driftX = 0, driftY = 0, lastViewDepth = 1;
 function resetDeep() { if (deep) { deep.dispose(); deep = null; } deepZoom = 1; viewDepth = 1; driftX = 0; driftY = 0; lastViewDepth = 1; }
 async function zoomRun() {
   if (!card || busy || zooming || !card.frames.length) return;
-  zooming = true; let failed = false, made = 0; updateUI();
+  zooming = true; stopPlaying();   // the playback loop must not keep drawing old frames into the canvas while the dream runs — that was the past-50 jump: Continue started a run with playback still live
+  let failed = false, made = 0; updateUI();
   if (!await ensureReady()) { zooming = false; updateUI(); return; }   // loads the current model (in case it was switched between runs)
   const want = Math.max(1, Math.min(MAX_RUN, Math.round(settings.frames)));   // 50 frames per run; switch preset/model, Continue for 50 more, up to 500 total
   const DEEP_MAX = Math.max(512, Math.max(card.w, card.h));   // longest side the working image grows to
@@ -589,6 +596,10 @@ async function zoomRun() {
         // Ease the zoom to a stop as the true depth approaches the cap.
         const ease = Math.max(0, 1 - viewDepth / ZOOM_MAX);
         const zf = 1 - (1 - settings.zoomFactor) * ease;
+        // Dream strength settles with the zoom: as the view stops
+        // magnifying, the dreaming eases to a gentle drift instead of
+        // churning in place (the boil that read as jumpy past frame 50).
+        const dreamEase = 0.25 + 0.75 * ease;
         // Smooth wander: the crop centre takes a small step each frame
         // instead of jumping somewhere random (the old random jump each
         // frame read as jitter once the view got deep).
@@ -596,14 +607,14 @@ async function zoomRun() {
         driftY = Math.max(-1, Math.min(1, driftY + (Math.random() * 2 - 1) * 0.2));
         const cw = Math.max(16, Math.round(w * zf)), ch = Math.max(16, Math.round(h * zf));
         const ox = driftX * (w - cw) / 2, oy = driftY * (h - ch) / 2;
-        const z = zoomCrop(deep, zf, ox, oy, (settings.sharpen || 0) * (0.4 + 0.6 / (1 + card.frames.length * 0.01)));
+        const z = zoomCrop(deep, zf, ox, oy, (settings.sharpen || 0) * (0.4 + 0.6 / (1 + card.frames.length * 0.01)) * dreamEase);
         deep.dispose(); deep = z;
         viewDepth = viewDepth / zf;   // true depth: upscaling never reduces it, only zooming grows it
         deepZoom = deepZoom / zf;
         const t0 = performance.now();
         // Dream strength eases down with total frames but never fades out:
         // a long dream keeps dreaming, just gentler.
-        const lrEff = settings.lr * (0.35 + 0.65 / (1 + card.frames.length * 0.012));
+        const lrEff = settings.lr * (0.35 + 0.65 / (1 + card.frames.length * 0.012)) * dreamEase;
         deep = dreamSteps(deep, lrEff, settings.steps, true);   // dream new layers in at this zoom
         // Ran out of pixels? Upscale so the dream has fresh room to grow.
         const longSide = Math.max(deep.shape[1], deep.shape[2]);
@@ -646,14 +657,20 @@ async function zoomRun() {
 // ===== PLAYBACK =====
 function startPlaying() {
   stopPlaying(); if (!card || card.frames.length < 2) return;
-  playing = true; let i = 0, last = performance.now();
+  playing = true; let i = 0, last = performance.now(), drawing = false;
+  // One decode at a time, in order: the counter only advances once the
+  // previous frame has actually landed, so a slow decode delays the next
+  // frame instead of letting frames overtake each other (the old code
+  // stamped `last` and advanced `i` before the decode, so frames could
+  // draw out of order and playback jumped 2-3 frames at a time).
   const tick = async () => {
     if (!playing || !card) return;
     const now = performance.now(), leg = seqLeg(i), fps = leg ? cardFpsOut() : cardFps();
-    if (now - last >= 1000 / fps) {
-      last = now; const fi = seqFrame(i); i++;
+    if (!drawing && now - last >= 1000 / fps) {
+      drawing = true; const fi = seqFrame(i); i++;
       const im = await decodeBlob(card.frames[fi]);
-      if (im && card) { const c = artCv.getContext("2d"); c.clearRect(0, 0, card.w, card.h); c.drawImage(im, 0, 0, card.w, card.h); if (im.close) im.close(); }
+      if (im && card && playing) { const c = artCv.getContext("2d"); c.clearRect(0, 0, card.w, card.h); c.drawImage(im, 0, 0, card.w, card.h); if (im.close) im.close(); }
+      last = performance.now(); drawing = false;
     }
     playTimer = requestAnimationFrame(tick);
   };
