@@ -23,12 +23,16 @@
   .square .hint{position:absolute;inset:auto 0 8px 0;text-align:center;font-size:12px;opacity:.65;pointer-events:none}
   .panel{margin-top:10px;background:rgba(20,8,46,.88);border:1px solid rgba(168,85,247,.45);border-radius:14px;padding:12px;box-shadow:0 0 24px rgba(123,47,255,.25)}
   .panel h2{font-size:13px;margin:0 0 8px;color:#7df9ff;text-shadow:0 0 10px rgba(0,229,255,.6);text-transform:uppercase;letter-spacing:1px}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
-  .grid label{display:block;font-size:12px;opacity:.85}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 12px}
+  .grid label{display:block;font-size:12px;opacity:.85;padding:2px 0}
   .grid label b{display:block;font-weight:600;margin-bottom:2px}
   .grid select,.grid input[type=number],.grid input[type=text]{width:100%;background:#150a33;color:#efeaff;border:1px solid #a855f7;border-radius:8px;padding:6px;font-size:14px}
   .grid select:focus,.grid input:focus{outline:none;border-color:#00e5ff;box-shadow:0 0 10px rgba(0,229,255,.5)}
-  .grid input[type=range]{width:100%;accent-color:#ff2fd6}
+  /* Sliders only take horizontal drags. A vertical swipe scrolls the
+     settings instead of dragging the slider — before this, scrolling the
+     menu kept accidentally changing whatever slider your finger landed
+     on (that is how a Vignette or RGB split could turn itself on). */
+  .grid input[type=range]{width:100%;accent-color:#ff2fd6;touch-action:pan-y}
   .grid .val{font-size:11px;opacity:.7}
   .full{grid-column:1/-1}
   .layers{display:flex;flex-wrap:wrap;gap:6px}
@@ -83,7 +87,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.25</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.26</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">📷 Camera</button>
@@ -167,14 +171,18 @@
         <input type="range" id="fade" min="0" max="1" step="0.05"></label>
       <label><b>RGB split <span class="val" id="rgbSplitVal"></span></b>
         <input type="range" id="rgbSplit" min="0" max="20" step="1"></label>
-      <label><b>Slice shift <span class="val" id="sliceShiftVal"></span></b>
-        <input type="range" id="sliceShift" min="0" max="1" step="0.05"></label>
       <label><b>Static <span class="val" id="staticAmtVal"></span></b>
         <input type="range" id="staticAmt" min="0" max="1" step="0.05"></label>
-      <label><b>Pixelate <span class="val" id="pixelateVal"></span></b>
-        <input type="range" id="pixelate" min="0" max="16" step="1"></label>
       <label><b>Invert <span class="val" id="invertAmtVal"></span></b>
         <input type="range" id="invertAmt" min="0" max="1" step="0.05"></label>
+      <label><b>Kaleidoscope <span class="val" id="kaleidoVal"></span></b>
+        <input type="range" id="kaleido" min="0" max="1" step="0.05"></label>
+      <label><b>Swirl <span class="val" id="swirlVal"></span></b>
+        <input type="range" id="swirl" min="0" max="1" step="0.05"></label>
+      <label><b>Echo <span class="val" id="echoVal"></span></b>
+        <input type="range" id="echo" min="0" max="1" step="0.05"></label>
+      <label><b>Scanlines <span class="val" id="scanlinesVal"></span></b>
+        <input type="range" id="scanlines" min="0" max="1" step="0.05"></label>
       <label><b>Camera</b>
         <select id="facing"><option value="environment">Back</option><option value="user">Front</option></select></label>
       <label><b>Model source</b>
@@ -288,14 +296,18 @@
           <input type="range" id="videoFade" min="0" max="1" step="0.05" value="0"></label>
         <label><b>RGB split <span class="val" id="videoRgbSplitVal">0</span></b>
           <input type="range" id="videoRgbSplit" min="0" max="20" step="1" value="0"></label>
-        <label><b>Slice shift <span class="val" id="videoSliceVal">0.00</span></b>
-          <input type="range" id="videoSlice" min="0" max="1" step="0.05" value="0"></label>
         <label><b>Static <span class="val" id="videoStaticVal">0.00</span></b>
           <input type="range" id="videoStatic" min="0" max="1" step="0.05" value="0"></label>
-        <label><b>Pixelate <span class="val" id="videoPixelateVal">0</span></b>
-          <input type="range" id="videoPixelate" min="0" max="16" step="1" value="0"></label>
         <label><b>Invert <span class="val" id="videoInvertVal">0.00</span></b>
           <input type="range" id="videoInvert" min="0" max="1" step="0.05" value="0"></label>
+        <label><b>Kaleidoscope <span class="val" id="videoKaleidoVal">0.00</span></b>
+          <input type="range" id="videoKaleido" min="0" max="1" step="0.05" value="0"></label>
+        <label><b>Swirl <span class="val" id="videoSwirlVal">0.00</span></b>
+          <input type="range" id="videoSwirl" min="0" max="1" step="0.05" value="0"></label>
+        <label><b>Echo <span class="val" id="videoEchoVal">0.00</span></b>
+          <input type="range" id="videoEcho" min="0" max="1" step="0.05" value="0"></label>
+        <label><b>Scanlines <span class="val" id="videoScanlinesVal">0.00</span></b>
+          <input type="range" id="videoScanlines" min="0" max="1" step="0.05" value="0"></label>
         <label class="full"><b>Detail pass</b>
           <select id="videoDetail"><option value="0" selected>Off · dream size only</option><option value="4k">4K · real detail, dreamed tile by tile (slow)</option></select>
           <span class="val">Turns each dreamed frame into true 4K — the frame is dreamed again at 3840px, tile by tile, so the detail is real, not an upscale. A 15s clip can take over an hour; short clips are quick.</span></label>
