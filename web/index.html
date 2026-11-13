@@ -76,7 +76,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.20</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.21</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">📷 Camera</button>
@@ -198,6 +198,9 @@
             <option value="transferdeep">Transfer Deep — heavy photo overlay</option>
             <option value="hyperweave">Hyper Weave — maximum everything</option>
             <option value="acidweave">Acid Weave — maximum trip, style dreams hard</option>
+            <option value="deepvortex">Deep Vortex — frames smear into each other, style morphs every frame</option>
+            <option value="meltdown">Meltdown — the style photo almost takes over completely</option>
+            <option value="fractaldive">Fractal Dive — dives deepest into the photo</option>
           </select>
           <span class="val">Uses the model, layers and settings from the Camera tab.</span>
         </label>
@@ -222,6 +225,12 @@
           <input type="range" id="videoMix" min="0" max="1" step="0.05" value="0.7"></label>
         <label id="weaveRow"><b>Weave <span class="val" id="videoWeaveVal">0.50</span></b>
           <input type="range" id="videoWeave" min="0" max="0.75" step="0.05" value="0.5"></label>
+        <label id="styleZoomRow"><b>Style zoom <span class="val" id="videoStyleZoomVal">0.970</span></b>
+          <input type="range" id="videoStyleZoom" min="0.90" max="0.995" step="0.005" value="0.97"></label>
+        <label id="styleRateRow"><b>Style dreams</b>
+          <select id="videoStyleRate"><option value="1">Every frame · fastest morph</option><option value="2">Every 2nd frame</option><option value="3" selected>Every 3rd frame</option><option value="6">Every 6th frame · slowest</option></select></label>
+        <label id="styleStepsRow"><b>Style steps <span class="val" id="videoStyleStepsVal">3</span></b>
+          <input type="range" id="videoStyleSteps" min="1" max="5" step="1" value="3"></label>
         <label class="full"><b>Zoom in while dreaming</b>
           <select id="videoZoom"><option value="1" selected>On · the video slowly zooms as it dreams</option><option value="0">Off · framing stays put</option></select></label>
       </div>
