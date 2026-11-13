@@ -183,7 +183,7 @@ const PRESETS = [
   { m: "zentangledream", name: "Zentangle weave", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["block_10_project_BN", "block_13_project_BN"] } },
   { m: "zentangledream", name: "Zentangle bloom", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["block_16_project_BN"] } },
 ];
-const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live", exportSize: "1080p", hueSpin: 0, saturation: 1, pulse: 0 };
+const DEFAULTS = { model: "v1", preset: 0, path: "random", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live", exportSize: "1080p", hueSpin: 0, saturation: 1, pulse: 0, drawnPath: [], glow: 0, soft: 0, vignette: 0, fade: 0, rgbSplit: 0, sliceShift: 0, staticAmt: 0, pixelate: 0, invertAmt: 0 };
 
 // ===== STATE =====
 const vid = $("vid"), artCv = $("artCv");
@@ -635,23 +635,152 @@ async function tensorToCanvas(img, cv) {
   ctx.drawImage(drawCv, (tw - dw) / 2, (th - dh) / 2, dw, dh);
 }
 function noteStepTime(ms) { msPerStep = msPerStep == null ? ms : msPerStep * 0.8 + ms * 0.2; updateEstimate(); }
-// Color effects: hue spin + saturation, applied to a finished frame's
-// canvas in place. The hue is cumulative (each frame adds the spin), so
-// the colours cycle as the dream runs — very trippy. It is a post-process
-// on the finished frame, so it bakes into the saved video/still (the
-// recorder and the gallery capture this canvas). A temp canvas holds the
-// filtered copy so the filter never reads from a canvas it is writing to.
-// If the browser has no canvas filter support this is a silent no-op.
-const fxCv = document.createElement("canvas");
-function applyColorFx(cv, hueDeg, sat) {
-  if ((!hueDeg || hueDeg === 0) && (!sat || sat === 1)) return;
-  if (fxCv.width !== cv.width || fxCv.height !== cv.height) { fxCv.width = cv.width; fxCv.height = cv.height; }
-  const fctx = fxCv.getContext("2d");
-  fctx.filter = "hue-rotate(" + (hueDeg || 0) + "deg) saturate(" + (sat || 1) + ")";
-  fctx.drawImage(cv, 0, 0);
+// ===== EFFECTS (dreamy + glitch) =====
+// One pass that applies every enabled effect to a finished frame's canvas,
+// in place. It bakes into the saved video/still. The filter effects (hue,
+// saturation, invert, soft blur, fade) combine into ONE canvas filter +
+// one draw, so they cost almost nothing. The composite effects (RGB split,
+// slice, glow, vignette, static, pixelate) each take a few draws. If
+// nothing is on, it returns immediately (no overhead). A missing canvas
+// filter is a silent no-op, so this never crashes an old WebView.
+const fxCv = document.createElement("canvas");   // temp 1
+const fxCv2 = document.createElement("canvas");  // temp 2 (RGB split channels)
+let noiseCv = null;   // pre-generated static noise, tiled
+function getNoiseCv() {
+  if (noiseCv) return noiseCv;
+  noiseCv = document.createElement("canvas"); noiseCv.width = 512; noiseCv.height = 512;
+  const ctx = noiseCv.getContext("2d");
+  const img = ctx.createImageData(512, 512);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = (Math.random() * 255) | 0;
+    img.data[i] = v; img.data[i + 1] = v; img.data[i + 2] = v; img.data[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return noiseCv;
+}
+function applyFx(cv, fx) {
+  if (!fx) return;
+  const W = cv.width, H = cv.height;
+  if (W <= 0 || H <= 0) return;
   const ctx = cv.getContext("2d");
-  ctx.clearRect(0, 0, cv.width, cv.height);
-  ctx.drawImage(fxCv, 0, 0);
+  const on = (fx.hue || (fx.sat && fx.sat !== 1) || fx.invert || fx.soft || fx.fade || fx.glow || fx.vignette || fx.rgb || fx.slice || fx.static || fx.pixel);
+  if (!on) return;
+  // 1. Pixelate first (it changes the resolution; the rest applies to the blocky image).
+  if (fx.pixel > 0) {
+    const bw = Math.max(1, Math.round(W / fx.pixel)), bh = Math.max(1, Math.round(H / fx.pixel));
+    if (fxCv.width !== bw || fxCv.height !== bh) { fxCv.width = bw; fxCv.height = bh; }
+    const fctx = fxCv.getContext("2d");
+    fctx.imageSmoothingEnabled = true;
+    fctx.drawImage(cv, 0, 0, bw, bh);
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(fxCv, 0, 0, W, H);
+    ctx.imageSmoothingEnabled = true;
+  }
+  // 2. Filter effects in one pass: hue, saturation, invert, soft blur, fade.
+  const parts = [];
+  if (fx.hue) parts.push("hue-rotate(" + fx.hue + "deg)");
+  if (fx.sat && fx.sat !== 1) parts.push("saturate(" + fx.sat + ")");
+  if (fx.invert) parts.push("invert(" + fx.invert + ")");
+  if (fx.soft) parts.push("blur(" + fx.soft + "px)");
+  if (fx.fade) { parts.push("brightness(" + (1 + 0.12 * fx.fade) + ")"); parts.push("contrast(" + (1 - 0.35 * fx.fade) + ")"); }
+  if (parts.length) {
+    if (fxCv.width !== W || fxCv.height !== H) { fxCv.width = W; fxCv.height = H; }
+    const fctx = fxCv.getContext("2d");
+    fctx.filter = parts.join(" ");
+    fctx.drawImage(cv, 0, 0);
+    fctx.filter = "none";
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(fxCv, 0, 0);
+  }
+  // 3. RGB split: the red channel shifts one way, blue the other.
+  if (fx.rgb > 0) {
+    const k = Math.round(fx.rgb);
+    if (fxCv.width !== W || fxCv.height !== H) { fxCv.width = W; fxCv.height = H; }
+    if (fxCv2.width !== W || fxCv2.height !== H) { fxCv2.width = W; fxCv2.height = H; }
+    const fctx = fxCv.getContext("2d"), gctx = fxCv2.getContext("2d");
+    fctx.clearRect(0, 0, W, H); fctx.drawImage(cv, 0, 0);   // fxCv = source
+    ctx.clearRect(0, 0, W, H);
+    ctx.globalCompositeOperation = "lighter";
+    const channels = [[255, 0, 0, k], [0, 255, 0, 0], [0, 0, 255, -k]];
+    for (const ch of channels) {
+      gctx.clearRect(0, 0, W, H);
+      gctx.drawImage(fxCv, 0, 0);
+      gctx.globalCompositeOperation = "multiply";   // isolate one channel
+      gctx.fillStyle = "rgb(" + ch[0] + "," + ch[1] + "," + ch[2] + ")";
+      gctx.fillRect(0, 0, W, H);
+      gctx.globalCompositeOperation = "source-over";
+      ctx.drawImage(fxCv2, ch[3], 0);
+    }
+    ctx.globalCompositeOperation = "source-over";
+  }
+  // 4. Slice shift: a few horizontal bands slide sideways (glitch).
+  if (fx.slice > 0) {
+    if (fxCv.width !== W || fxCv.height !== H) { fxCv.width = W; fxCv.height = H; }
+    const fctx = fxCv.getContext("2d");
+    fctx.clearRect(0, 0, W, H); fctx.drawImage(cv, 0, 0);   // fxCv = source
+    const n = 2 + Math.round(fx.slice * 6);   // 2–8 bands
+    for (let i = 0; i < n; i++) {
+      const y = Math.floor(Math.random() * H);
+      const h = Math.max(4, Math.floor(H * (0.02 + Math.random() * 0.08)));
+      const dx = Math.round((Math.random() * 2 - 1) * fx.slice * W * 0.08);
+      ctx.drawImage(fxCv, 0, y, W, h, dx, y, W, h);
+    }
+  }
+  // 5. Glow: a blurred bright copy screened over the top (bloom / haze).
+  if (fx.glow > 0) {
+    if (fxCv.width !== W || fxCv.height !== H) { fxCv.width = W; fxCv.height = H; }
+    const fctx = fxCv.getContext("2d");
+    fctx.filter = "blur(" + Math.max(2, Math.round(Math.min(W, H) * 0.02)) + "px) brightness(1.3)";
+    fctx.drawImage(cv, 0, 0);
+    fctx.filter = "none";
+    ctx.globalCompositeOperation = "screen";
+    ctx.globalAlpha = fx.glow * 0.7;
+    ctx.drawImage(fxCv, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+  }
+  // 6. Vignette: darken the edges.
+  if (fx.vignette > 0) {
+    const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, "rgba(0,0,0," + (fx.vignette * 0.8) + ")");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+  // 7. Static: film grain (a tiled noise canvas at a random offset).
+  if (fx.static > 0) {
+    const nc = getNoiseCv();
+    const ox = Math.floor(Math.random() * 512), oy = Math.floor(Math.random() * 512);
+    ctx.save();
+    ctx.globalAlpha = fx.static * 0.45;
+    ctx.globalCompositeOperation = "overlay";
+    for (let y = -oy; y < H; y += 512) for (let x = -ox; x < W; x += 512) ctx.drawImage(nc, x, y);
+    ctx.restore();
+  }
+}
+// Build the fx object for the Camera (hue is the cumulative Color spin).
+function cameraFx(hue) {
+  return {
+    hue: hue || 0, sat: settings.saturation || 1,
+    glow: settings.glow || 0, soft: settings.soft || 0,
+    vignette: settings.vignette || 0, fade: settings.fade || 0,
+    rgb: settings.rgbSplit || 0, slice: settings.sliceShift || 0,
+    static: settings.staticAmt || 0, pixel: settings.pixelate || 0,
+    invert: settings.invertAmt || 0
+  };
+}
+// Build the fx object for the Video (hue is the video's cumulative spin).
+function videoFx(hue) {
+  const v = id => parseFloat($(id).value) || 0;
+  return {
+    hue: hue || 0, sat: v("videoSaturation") || 1,
+    glow: v("videoGlow"), soft: v("videoSoft"),
+    vignette: v("videoVignette"), fade: v("videoFade"),
+    rgb: v("videoRgbSplit"), slice: v("videoSlice"),
+    static: v("videoStatic"), pixel: v("videoPixelate"),
+    invert: v("videoInvert")
+  };
 }
 function updateEstimate() {
   const el = $("estimate"); if (msPerStep == null) { el.textContent = ""; return; }
@@ -709,7 +838,7 @@ async function startDream() {
   }
   await tensorToCanvas(cur, artCv);
   hueTotal = (settings.hueSpin || 0) % 360;   // the first frame takes the first spin step
-  applyColorFx(artCv, hueTotal, settings.saturation || 1);
+  applyFx(artCv, cameraFx(hueTotal));
   await pushFrame();
   busy = false; setBar(null);
   setStatus("Dreaming. Falling in — " + settings.frames + " frames.");
@@ -745,7 +874,192 @@ const ZOOM_CAP = 3;   // kept for loading old saves (zoomTotal); the zoom itself
 const ZOOM_MAX = 16;  // total magnification vs the seed: the zoom eases to a stop here
 let deep = null, deepZoom = 1, viewDepth = 1, driftX = 0, driftY = 0, lastViewDepth = 1;
 let hueTotal = 0;   // cumulative hue rotation for the Color spin effect; resets with a new dream
-function resetDeep() { if (deep) { deep.dispose(); deep = null; } deepZoom = 1; viewDepth = 1; driftX = 0; driftY = 0; lastViewDepth = 1; hueTotal = 0; }
+let pathPhase = 0;   // where the zoom centre is along its path shape (0..1 = one full loop)
+function resetDeep() { if (deep) { deep.dispose(); deep = null; } deepZoom = 1; viewDepth = 1; driftX = 0; driftY = 0; lastViewDepth = 1; hueTotal = 0; pathPhase = 0; }
+// ===== ZOOM PATH SHAPES =====
+// The zoom centre follows a shape. Each shape is a closed loop: pathPoint
+// returns {x, y} in [-1, 1] for a phase t in [0, 1) around the loop.
+// "random" keeps the old smooth wander, "straight" holds the centre
+// still, "drawn" follows the shape the user drew in the box. Path segment
+// sets how many frames one loop takes (x6), Path range how far it roams.
+const SQUARE_VERTS = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+const TRI_VERTS = [[0, -1], [1, 1], [-1, 1]];
+const STAR_VERTS = (() => {   // 5-point star: 10 vertices, outer r=1, inner r=0.42, starting at the top
+  const v = [];
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 === 0 ? 1 : 0.42;
+    const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
+    v.push([r * Math.cos(a), r * Math.sin(a)]);
+  }
+  return v;
+})();
+function polyPoint(verts, t) {
+  // Walk a polygon's perimeter at constant speed (by edge length).
+  const n = verts.length;
+  const lens = [];
+  let tot = 0;
+  for (let i = 0; i < n; i++) {
+    const a = verts[i], b = verts[(i + 1) % n];
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    lens.push(l); tot += l;
+  }
+  if (!tot) return { x: verts[0][0], y: verts[0][1] };
+  let d = (((t % 1) + 1) % 1) * tot;
+  for (let i = 0; i < n; i++) {
+    if (d <= lens[i] || i === n - 1) {
+      const u = lens[i] ? Math.max(0, Math.min(1, d / lens[i])) : 0;
+      const a = verts[i], b = verts[(i + 1) % n];
+      return { x: a[0] + (b[0] - a[0]) * u, y: a[1] + (b[1] - a[1]) * u };
+    }
+    d -= lens[i];
+  }
+  return { x: verts[0][0], y: verts[0][1] };
+}
+function pathPoint(shape, t) {
+  const a = t * Math.PI * 2;   // angle around the loop
+  const tri = x => {   // triangle wave in [-1, 1], period 2π
+    const u = (((x / (Math.PI * 2)) % 1) + 1) % 1;
+    return u < 0.5 ? u * 4 - 1 : 3 - u * 4;
+  };
+  switch (shape) {
+    case "circle": return { x: Math.cos(a), y: Math.sin(a) };
+    case "figure8": return { x: Math.sin(a), y: Math.sin(2 * a) / 2 };   // infinity / lemniscate
+    case "heart": {   // parametric heart, scaled to [-1, 1]; y flipped so the point is down
+      const s = Math.sin(a), c = Math.cos(a);
+      return { x: 16 * s * s * s / 16, y: -(13 * c - 5 * Math.cos(2 * a) - 2 * Math.cos(3 * a) - Math.cos(4 * a)) / 17 };
+    }
+    case "star": return polyPoint(STAR_VERTS, t);
+    case "lissajous": return { x: Math.sin(3 * a), y: Math.sin(2 * a + Math.PI / 2) };   // 3:2 woven curve
+    case "zigzag": return { x: tri(2 * a), y: tri(a + Math.PI / 2) };
+    case "bounce": return { x: tri(a), y: tri(2 * a + 1) };   // bounces off the edges like a DVD logo (x 1 cycle, y 2 cycles, so the loop closes)
+    case "wave": return { x: Math.sin(a), y: 0.6 * Math.sin(2 * a) };
+    case "square": return polyPoint(SQUARE_VERTS, t);
+    case "triangle": return polyPoint(TRI_VERTS, t);
+    case "spiral": {   // spirals out and back in over 2 turns, so the loop is continuous
+      const r = Math.abs(Math.sin(Math.PI * t));
+      return { x: r * Math.cos(2 * a), y: r * Math.sin(2 * a) };
+    }
+    case "leftright": return { x: tri(a), y: 0 };
+    case "updown": return { x: 0, y: tri(a) };
+    case "diagonal": return { x: tri(a), y: tri(a) };
+    default: return { x: 0, y: 0 };
+  }
+}
+let drawnPath = [];   // [{x, y}] in [-1, 1] — the shape the user drew; persisted in settings.drawnPath
+function drawnPathPoint(t) {
+  // Ping-pong along the drawn points (out and back), so an open curve
+  // never jumps. The points are resampled evenly when drawn, so the
+  // speed is constant along the shape.
+  if (!drawnPath || drawnPath.length < 2) return { x: 0, y: 0 };
+  const pts = drawnPath;
+  const u = t < 0.5 ? t * 2 : (1 - t) * 2;   // 0..1 out, 1..0 back
+  const f = u * (pts.length - 1);
+  const i = Math.min(pts.length - 2, Math.floor(f));
+  const frac = f - i;
+  return { x: pts[i].x + (pts[i + 1].x - pts[i].x) * frac, y: pts[i].y + (pts[i + 1].y - pts[i].y) * frac };
+}
+// ===== DRAW YOUR OWN PATH =====
+// The user draws a shape in the box; the zoom centre follows it. Points
+// are captured as they draw, then resampled to 64 evenly-spaced points
+// (by arc length) when they lift, so the centre moves at constant speed.
+let drawing = false, rawDrawPts = [];
+function drawPathCvRedraw() {
+  const cv = $("drawPathCv"); if (!cv) return;
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(cv.width / 2, 0); ctx.lineTo(cv.width / 2, cv.height); ctx.moveTo(0, cv.height / 2); ctx.lineTo(cv.width, cv.height / 2); ctx.stroke();
+  if (!drawnPath || drawnPath.length < 2) return;
+  ctx.strokeStyle = "#00e5ff"; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.lineCap = "round";
+  ctx.shadowColor = "rgba(0,229,255,0.8)"; ctx.shadowBlur = 6;
+  ctx.beginPath();
+  drawnPath.forEach((p, i) => {
+    const x = (p.x + 1) / 2 * cv.width, y = (p.y + 1) / 2 * cv.height;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  const s = drawnPath[0];
+  ctx.fillStyle = "#ff2fd6";
+  ctx.beginPath(); ctx.arc((s.x + 1) / 2 * cv.width, (s.y + 1) / 2 * cv.height, 4, 0, Math.PI * 2); ctx.fill();
+}
+function drawPathResample(pts) {
+  if (pts.length < 2) return pts.slice();
+  const lens = [0];
+  let tot = 0;
+  for (let i = 1; i < pts.length; i++) { tot += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y); lens.push(tot); }
+  if (tot < 0.001) return pts.slice(0, 1);
+  const out = [];
+  for (let k = 0; k < 64; k++) {
+    const d = (k / 64) * tot;
+    let i = 1;
+    while (i < lens.length - 1 && lens[i] < d) i++;
+    const segLen = lens[i] - lens[i - 1] || 1;
+    const u = Math.max(0, Math.min(1, (d - lens[i - 1]) / segLen));
+    out.push({ x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * u, y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * u });
+  }
+  return out;
+}
+function drawPathSave() {
+  settings.drawnPath = drawnPath.map(p => [Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000]);
+  saveSettings();
+}
+function drawPathHint() {
+  const el = $("drawHint"); if (!el) return;
+  el.textContent = (drawnPath && drawnPath.length >= 2) ? "Saved — pick Drawn in Zoom path to follow it." : "Draw a shape above, then pick Drawn in Zoom path.";
+}
+function drawPathInit() {
+  const cv = $("drawPathCv"); if (!cv) return;
+  if (settings.drawnPath && settings.drawnPath.length >= 2) {
+    drawnPath = settings.drawnPath.map(p => ({ x: p[0], y: p[1] }));
+  }
+  drawPathCvRedraw();
+  drawPathHint();
+  const pos = e => {
+    const r = cv.getBoundingClientRect();
+    const x = ((e.clientX - r.left) / r.width) * 2 - 1;
+    const y = ((e.clientY - r.top) / r.height) * 2 - 1;
+    return { x: Math.max(-1, Math.min(1, x)), y: Math.max(-1, Math.min(1, y)) };
+  };
+  const start = e => {
+    e.preventDefault();
+    drawing = true; rawDrawPts = [pos(e)];
+    if (cv.setPointerCapture && e.pointerId != null) { try { cv.setPointerCapture(e.pointerId); } catch (err) {} }
+  };
+  const move = e => {
+    if (!drawing) return;
+    e.preventDefault();
+    const p = pos(e);
+    const last = rawDrawPts[rawDrawPts.length - 1];
+    if (Math.hypot(p.x - last.x, p.y - last.y) < 0.02) return;   // only keep points ~3px apart
+    rawDrawPts.push(p);
+    const ctx = cv.getContext("2d");
+    ctx.strokeStyle = "#00e5ff"; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo((last.x + 1) / 2 * cv.width, (last.y + 1) / 2 * cv.height);
+    ctx.lineTo((p.x + 1) / 2 * cv.width, (p.y + 1) / 2 * cv.height);
+    ctx.stroke();
+  };
+  const end = () => {
+    if (!drawing) return;
+    drawing = false;
+    if (rawDrawPts.length >= 2) {
+      drawnPath = drawPathResample(rawDrawPts);
+      drawPathSave();
+    }
+    drawPathCvRedraw();
+    drawPathHint();
+  };
+  cv.addEventListener("pointerdown", start);
+  cv.addEventListener("pointermove", move);
+  cv.addEventListener("pointerup", end);
+  cv.addEventListener("pointercancel", end);
+  $("drawClearBtn").onclick = () => {
+    drawnPath = []; rawDrawPts = [];
+    settings.drawnPath = []; saveSettings();
+    drawPathCvRedraw(); drawPathHint();
+  };
+}
 async function zoomRun() {
   if (!card || busy || zooming || !card.frames.length) return;
   zooming = true; stopPlaying();   // the playback loop must not keep drawing old frames into the canvas while the dream runs — that was the past-50 jump: Continue started a run with playback still live
@@ -772,13 +1086,33 @@ async function zoomRun() {
         // magnifying, the dreaming eases to a gentle drift instead of
         // churning in place (the boil that read as jumpy past frame 50).
         const dreamEase = 0.25 + 0.75 * ease;
-        // Smooth wander: the crop centre takes a small step each frame
-        // instead of jumping somewhere random (the old random jump each
-        // frame read as jitter once the view got deep).
-        driftX = Math.max(-1, Math.min(1, driftX + (Math.random() * 2 - 1) * 0.2));
-        driftY = Math.max(-1, Math.min(1, driftY + (Math.random() * 2 - 1) * 0.2));
+        // The zoom centre follows the selected path shape. "random" keeps
+        // the old smooth wander; "straight" holds it still; the rest trace
+        // their shape, and "drawn" follows the shape in the box. Path
+        // segment sets the loop length (x6 frames), Path range how far it
+        // roams (0.08 = the shape's full extent, higher = wider).
+        const seg = Math.max(4, Math.round(settings.segFrames || 10));
+        pathPhase = (pathPhase + 1 / (seg * 6)) % 1;
+        let px, py;
+        if (settings.path === "random") {
+          // Smooth wander: the centre takes a small step each frame
+          // instead of jumping somewhere random (the old random jump each
+          // frame read as jitter once the view got deep).
+          driftX = Math.max(-1, Math.min(1, driftX + (Math.random() * 2 - 1) * 0.2));
+          driftY = Math.max(-1, Math.min(1, driftY + (Math.random() * 2 - 1) * 0.2));
+          px = driftX; py = driftY;
+        } else if (settings.path === "straight") {
+          px = 0; py = 0;
+        } else if (settings.path === "drawn") {
+          const dp = drawnPathPoint(pathPhase);
+          px = dp.x; py = dp.y;
+        } else {
+          const pp = pathPoint(settings.path, pathPhase);
+          px = pp.x; py = pp.y;
+        }
+        const rangeScale = (settings.range || 0.08) / 0.08;
         const cw = Math.max(16, Math.round(w * zf)), ch = Math.max(16, Math.round(h * zf));
-        const ox = driftX * (w - cw) / 2, oy = driftY * (h - ch) / 2;
+        const ox = px * rangeScale * (w - cw) / 2, oy = py * rangeScale * (h - ch) / 2;
         const z = zoomCrop(deep, zf, ox, oy, (settings.sharpen || 0) * (0.4 + 0.6 / (1 + card.frames.length * 0.01)) * dreamEase);
         deep.dispose(); deep = z;
         viewDepth = viewDepth / zf;   // true depth: upscaling never reduces it, only zooming grows it
@@ -800,7 +1134,7 @@ async function zoomRun() {
         lastViewDepth = viewDepth; card.viewDepth = viewDepth;
         await tensorToCanvas(deep, artCv); noteStepTime((performance.now() - t0) / Math.max(1, settings.steps));
         hueTotal = (hueTotal + (settings.hueSpin || 0)) % 360;   // Color spin: the hue keeps cycling as the dream falls in
-        applyColorFx(artCv, hueTotal, settings.saturation || 1);
+        applyFx(artCv, cameraFx(hueTotal));
         await pushFrame(); made++;
         setStatus("Zooming… frame " + made + " of " + want + " · " + Math.max(deep.shape[1], deep.shape[2]) + "px · " + viewDepth.toFixed(1) + "× · " + card.frames.length + " total");
         setBar(made / want);
@@ -1079,7 +1413,7 @@ function applyPreset(i) {
   syncControls(); buildLayers(); saveSettings();
 }
 function syncControls() {
-  const map = { steps: "steps", lr: "lr", zoomFactor: "zoomFactor", range: "range", segFrames: "segFrames", frames: "frames", playFps: "playFps", playFpsOut: "playFpsOut", sharpen: "sharpen", octaves: "octaves", jitter: "jitter", hueSpin: "hueSpin", saturation: "saturation", pulse: "pulse" };
+  const map = { steps: "steps", lr: "lr", zoomFactor: "zoomFactor", range: "range", segFrames: "segFrames", frames: "frames", playFps: "playFps", playFpsOut: "playFpsOut", sharpen: "sharpen", octaves: "octaves", jitter: "jitter", hueSpin: "hueSpin", saturation: "saturation", pulse: "pulse", glow: "glow", soft: "soft", vignette: "vignette", fade: "fade", rgbSplit: "rgbSplit", sliceShift: "sliceShift", staticAmt: "staticAmt", pixelate: "pixelate", invertAmt: "invertAmt" };
   for (const id of Object.keys(map)) { const el = $(id); el.value = settings[map[id]]; const v = $(id + "Val"); if (v) v.textContent = fmtVal(id, settings[map[id]]); }
   $("path").value = settings.path; $("quality").value = settings.quality; $("ratio").value = settings.ratio || "1:1";
   $("exportSize").value = settings.exportSize || "1080p";
@@ -1095,6 +1429,8 @@ function fmtVal(id, v) {
   if (id === "hueSpin") return (+v).toFixed(1);
   if (id === "saturation") return (+v).toFixed(2);
   if (id === "pulse") return (+v).toFixed(2);
+  if (id === "glow" || id === "vignette" || id === "fade" || id === "sliceShift" || id === "staticAmt" || id === "invertAmt") return (+v).toFixed(2);
+  if (id === "soft") return (+v).toFixed(2);
   return String(v);
 }
 function initControls() {
@@ -1112,6 +1448,16 @@ function initControls() {
   bindRange("hueSpin", "hueSpin", v => (+v).toFixed(1));
   bindRange("saturation", "saturation", v => (+v).toFixed(2));
   bindRange("pulse", "pulse", v => (+v).toFixed(2));
+  bindRange("glow", "glow", v => (+v).toFixed(2));
+  bindRange("soft", "soft", v => (+v).toFixed(2));
+  bindRange("vignette", "vignette", v => (+v).toFixed(2));
+  bindRange("fade", "fade", v => (+v).toFixed(2));
+  bindRange("rgbSplit", "rgbSplit", v => String(v));
+  bindRange("sliceShift", "sliceShift", v => (+v).toFixed(2));
+  bindRange("staticAmt", "staticAmt", v => (+v).toFixed(2));
+  bindRange("pixelate", "pixelate", v => String(v));
+  bindRange("invertAmt", "invertAmt", v => (+v).toFixed(2));
+  drawPathInit();   // the draw-your-own-path box (restores a saved shape)
   $("path").value = settings.path;
   $("path").addEventListener("change", () => { settings.path = $("path").value; saveSettings(); });
   $("quality").value = settings.quality;
@@ -1398,7 +1744,7 @@ async function processVideo() {
       // the saturation pops. Applied to the display canvas, so the live
       // preview and the recording both get it.
       vHueTotal = (vHueTotal + (parseFloat($("videoHueSpin").value) || 0)) % 360;
-      applyColorFx(dispCv, vHueTotal, parseFloat($("videoSaturation").value) || 1);
+      applyFx(dispCv, videoFx(vHueTotal));
       pv.getContext("2d").drawImage(dispCv, 0, 0, pv.width, pv.height);   // live preview: the new frame, in order
       if (prev) prev.dispose();
       prev = cur;
@@ -1446,6 +1792,15 @@ function initVideoTab() {
   $("videoHueSpin").addEventListener("input", () => { $("videoHueSpinVal").textContent = (+$("videoHueSpin").value).toFixed(1); });
   $("videoSaturation").addEventListener("input", () => { $("videoSaturationVal").textContent = (+$("videoSaturation").value).toFixed(2); });
   $("videoPulse").addEventListener("input", () => { $("videoPulseVal").textContent = (+$("videoPulse").value).toFixed(2); });
+  $("videoGlow").addEventListener("input", () => { $("videoGlowVal").textContent = (+$("videoGlow").value).toFixed(2); });
+  $("videoSoft").addEventListener("input", () => { $("videoSoftVal").textContent = (+$("videoSoft").value).toFixed(2); });
+  $("videoVignette").addEventListener("input", () => { $("videoVignetteVal").textContent = (+$("videoVignette").value).toFixed(2); });
+  $("videoFade").addEventListener("input", () => { $("videoFadeVal").textContent = (+$("videoFade").value).toFixed(2); });
+  $("videoRgbSplit").addEventListener("input", () => { $("videoRgbSplitVal").textContent = $("videoRgbSplit").value; });
+  $("videoSlice").addEventListener("input", () => { $("videoSliceVal").textContent = (+$("videoSlice").value).toFixed(2); });
+  $("videoStatic").addEventListener("input", () => { $("videoStaticVal").textContent = (+$("videoStatic").value).toFixed(2); });
+  $("videoPixelate").addEventListener("input", () => { $("videoPixelateVal").textContent = $("videoPixelate").value; });
+  $("videoInvert").addEventListener("input", () => { $("videoInvertVal").textContent = (+$("videoInvert").value).toFixed(2); });
   $("videoPickBtn").onclick = () => $("videoIn").click();
   $("videoIn").addEventListener("change", () => {
     const f = $("videoIn").files[0]; if (!f) return;
