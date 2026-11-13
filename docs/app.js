@@ -81,14 +81,14 @@ const PRE = {
            lo: -2.118, hi: 2.64, noise: [-0.05, 0.05] },   // DenseNet: x/255, then (x-mean)/std per channel (RGB)
 };
 const WASM_PATH = "tfjs/";
-const QUALITY = { turbo: { w: 192, h: 192 }, fast: { w: 256, h: 256 }, normal: { w: 384, h: 384 }, high: { w: 512, h: 512 }, ultra: { w: 768, h: 768 }, max: { w: 1024, h: 1024 } };
-// Export size is the long side of the saved video/still, upscaled from the
-// dream. The dream itself tops out at 1024 (a 2K/4K image through the model
-// would take minutes a frame and run the phone out of memory), so 2K/4K
-// here means a true 2K/4K file, upscaled with high-quality filtering —
-// sharpest when the dream was made at Max 1024.
-const EXPORT_SIZE = { "720p": 1280, "1080p": 1920, "2k": 2560, "4k": 3840 };
-const EXPORT_BITRATE = { "720p": 8000000, "1080p": 12000000, "2k": 18000000, "4k": 30000000 };
+const QUALITY = { turbo: { w: 192, h: 192 }, fast: { w: 256, h: 256 }, normal: { w: 384, h: 384 }, high: { w: 512, h: 512 }, ultra: { w: 768, h: 768 }, max: { w: 1024, h: 1024 }, twoK: { w: 1440, h: 1440 } };
+// Export size is the long side of the saved video/still. A still saved
+// bigger than the dream is dreamed for real at that size, tile by tile
+// (dreamTiled) — so 4K/8K stills are actual 4K/8K deepdreams, not an
+// upscale. Video stays at 4K max: a true 8K video would need the tiled
+// dream on every frame of the card, so 8K is stills only.
+const EXPORT_SIZE = { "720p": 1280, "1080p": 1920, "2k": 2560, "4k": 3840, "8k": 7680 };
+const EXPORT_BITRATE = { "720p": 8000000, "1080p": 12000000, "2k": 18000000, "4k": 30000000, "8k": 60000000 };
 const MAX_RUN = 50, TOTAL_MAX = 500;   // 50 frames per run; Continue adds 50 more, up to 500 total
 const OCTAVE_SCALE = 1.35;
 const LABEL = { webgpu: "WebGPU (GPU)", webgl: "WebGL (GPU)", wasm: "WebAssembly (CPU)", cpu: "JavaScript (CPU)" };
@@ -451,6 +451,151 @@ function dreamStep(img, lr) {
     return img.add(g.div(std.add(1e-8)).mul(lr)).clipByValue(P.lo, P.hi);
   });
 }
+// ===== TILED HIGH-RES DREAM (true 4K / 8K) =====
+// A 4K image through the model would take minutes a frame and run the
+// phone out of memory — that is why 4K export used to be an upscale of a
+// small dream. The real fix is to dream in overlapping tiles: each tile is
+// dreamed on its own (bounded memory, one tile at a time), and the tiles
+// are blended with a feathered weight that sums to 1 everywhere, so there
+// are no seams. The result is real gradient ascent at full resolution,
+// not an upscale. One tile is ~0.3s, so a 4K frame is ~50 tiles (~20s)
+// and an 8K frame ~220 tiles (~2 min).
+const TILE_SIZE = 512, TILE_OVERLAP = 128;
+function getTileMask(oLeft, oRight, oTop, oBottom) {
+  // Feather weight for a tile: 1 in the middle, ramping to 0 over the
+  // overlap at each edge. Each overlap is the tile's ACTUAL overlap with
+  // its neighbour on that side (even spacing makes them nearly equal, but
+  // rounding makes them differ by a pixel or two — the ramp must span
+  // that side's overlap exactly, or the blend sums to more than 1 in the
+  // middle). A border edge (null) stays 1, so the image edge is not
+  // dimmed. The weight is the product of the horizontal and vertical
+  // ramps, so neighbouring tiles' weights sum to exactly 1 in every
+  // overlap, corners included.
+  const key = [oLeft, oRight, oTop, oBottom].join(",");
+  if (getTileMask.cache[key]) return getTileMask.cache[key];
+  const c = document.createElement("canvas"); c.width = TILE_SIZE; c.height = TILE_SIZE;
+  const ctx = c.getContext("2d");
+  const img = ctx.createImageData(TILE_SIZE, TILE_SIZE);
+  const d = img.data;
+  for (let y = 0; y < TILE_SIZE; y++) {
+    // Each ramp is clamped to 1 on its own: a pixel far from both edges
+    // of an axis has weight 1 on that axis, not the raw (large) ratio —
+    // without the clamp the product overshoots and the blend sums to ~2.
+    const wy = Math.max(0, Math.min(1, Math.min(oTop == null ? 1 : (y + 0.5) / oTop, oBottom == null ? 1 : (TILE_SIZE - y - 0.5) / oBottom)));
+    for (let x = 0; x < TILE_SIZE; x++) {
+      const wx = Math.max(0, Math.min(1, Math.min(oLeft == null ? 1 : (x + 0.5) / oLeft, oRight == null ? 1 : (TILE_SIZE - x - 0.5) / oRight)));
+      const w = wx * wy;
+      const i = (y * TILE_SIZE + x) * 4;
+      d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; d[i + 3] = Math.round(w * 255);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  getTileMask.cache[key] = c;
+  return c;
+}
+getTileMask.cache = {};
+function tileAxis(W) {
+  // Evenly spaced tile positions covering [0, W - TILE_SIZE]. The stride
+  // is kept between 256 and 448 (overlap 64–256), so no tile is ever in
+  // two overlaps at once. Target stride is 384 (overlap 128).
+  const Q = W - TILE_SIZE;
+  if (Q <= 0) return [0];
+  const mLo = Math.ceil(Q / 448), mHi = Math.floor(Q / 256);
+  let m = Math.round(Q / (TILE_SIZE - TILE_OVERLAP));
+  if (mLo <= mHi) m = Math.max(mLo, Math.min(mHi, m));
+  if (m < 1) m = 1;
+  const pos = [];
+  for (let i = 0; i <= m; i++) pos.push(Math.round(i * Q / m));
+  return pos;
+}
+async function dreamTiled(cv, lr, steps, onTile, scratch) {
+  // cv: a 2D canvas at the target resolution. Dreamed in place, tile by
+  // tile. onTile(done, total) reports progress. scratch (optional) holds
+  // the accumulation canvases so a video can reuse them across frames
+  // instead of allocating a 4K canvas per frame.
+  const W = cv.width, H = cv.height;
+  if (W <= 0 || H <= 0) return;
+  // A small image is just dreamed whole — no tiling needed.
+  if (W <= TILE_SIZE && H <= TILE_SIZE) {
+    let t = canvasToTensor(cv);
+    t = dreamSteps(t, lr, steps, true);
+    await tensorToCanvas(t, cv);
+    t.dispose();
+    if (onTile) onTile(1, 1);
+    return;
+  }
+  scratch = scratch || {};
+  if (!scratch.resCv || scratch.resCv.width !== W || scratch.resCv.height !== H) {
+    scratch.resCv = document.createElement("canvas"); scratch.resCv.width = W; scratch.resCv.height = H;
+    scratch.wCv = document.createElement("canvas"); scratch.wCv.width = W; scratch.wCv.height = H;
+    scratch.tileCv = document.createElement("canvas"); scratch.tileCv.width = TILE_SIZE; scratch.tileCv.height = TILE_SIZE;
+    scratch.tmpCv = document.createElement("canvas"); scratch.tmpCv.width = TILE_SIZE; scratch.tmpCv.height = TILE_SIZE;
+  }
+  const resCtx = scratch.resCv.getContext("2d"), wCtx = scratch.wCv.getContext("2d");
+  const tileCtx = scratch.tileCv.getContext("2d"), tmpCtx = scratch.tmpCv.getContext("2d");
+  resCtx.clearRect(0, 0, W, H); wCtx.clearRect(0, 0, W, H);
+  // Tile grid: evenly spaced positions, so every overlap is about the
+  // same width. A stride grid with a clamped last tile makes one overlap
+  // up to 400px wide, and then a tile sits in two overlaps at once and
+  // the feather weights sum to ~1.1 instead of 1 (a bright band). Even
+  // spacing keeps every overlap between 64 and 256px, so no tile is ever
+  // in two overlaps at once and the weights always sum to 1.
+  const xs = tileAxis(W), ys = tileAxis(H);
+  const total = xs.length * ys.length;
+  let done = 0;
+  for (let yi = 0; yi < ys.length; yi++) for (let xi = 0; xi < xs.length; xi++) {
+    const tx = xs[xi], ty = ys[yi];
+    // Each edge's ramp spans that side's actual overlap with its
+    // neighbour (a border edge has none). The overlaps come from the grid
+    // positions, so the two tiles sharing an overlap always agree on it.
+    const oLeft = xi === 0 ? null : (xs[xi - 1] + TILE_SIZE) - tx;
+    const oRight = xi === xs.length - 1 ? null : (tx + TILE_SIZE) - xs[xi + 1];
+    const oTop = yi === 0 ? null : (ys[yi - 1] + TILE_SIZE) - ty;
+    const oBottom = yi === ys.length - 1 ? null : (ty + TILE_SIZE) - ys[yi + 1];
+    // Extract + dream the tile.
+    tileCtx.clearRect(0, 0, TILE_SIZE, TILE_SIZE);
+    tileCtx.drawImage(cv, tx, ty, TILE_SIZE, TILE_SIZE, 0, 0, TILE_SIZE, TILE_SIZE);
+    let t = canvasToTensor(scratch.tileCv);
+    t = dreamSteps(t, lr, steps, true);
+    await tensorToCanvas(t, scratch.tileCv);
+    t.dispose();
+    // Feather mask for this tile (cached by its four overlaps).
+    const mask = getTileMask(oLeft, oRight, oTop, oBottom);
+    // tmp = dreamed tile with alpha = weight.
+    tmpCtx.clearRect(0, 0, TILE_SIZE, TILE_SIZE);
+    tmpCtx.drawImage(scratch.tileCv, 0, 0);
+    tmpCtx.globalCompositeOperation = "destination-in";
+    tmpCtx.drawImage(mask, 0, 0);
+    tmpCtx.globalCompositeOperation = "source-over";
+    // Accumulate: result += tile*weight, weight += weight. 'lighter' adds
+    // source*alpha, and the weights sum to 1, so nothing clips.
+    resCtx.globalCompositeOperation = "lighter";
+    resCtx.drawImage(scratch.tmpCv, tx, ty);
+    resCtx.globalCompositeOperation = "source-over";
+    wCtx.globalCompositeOperation = "lighter";
+    wCtx.drawImage(mask, tx, ty);
+    wCtx.globalCompositeOperation = "source-over";
+    done++;
+    if (onTile) onTile(done, total);
+    await tf.nextFrame();
+  }
+  // Normalize: out = result / weight. The weights sum to 1, so this only
+  // corrects 8-bit rounding — but it also guarantees the edges are right.
+  const resImg = resCtx.getImageData(0, 0, W, H);
+  const wImg = wCtx.getImageData(0, 0, W, H);
+  const outCtx = cv.getContext("2d");
+  const outImg = outCtx.getImageData(0, 0, W, H);
+  const rd = resImg.data, wd = wImg.data, od = outImg.data;
+  for (let i = 0; i < od.length; i += 4) {
+    const wsum = wd[i] / 255;   // weight canvas R channel = 255 * weight sum
+    const inv = wsum > 0.01 ? 1 / wsum : 1;
+    od[i] = Math.max(0, Math.min(255, rd[i] * inv));
+    od[i + 1] = Math.max(0, Math.min(255, rd[i + 1] * inv));
+    od[i + 2] = Math.max(0, Math.min(255, rd[i + 2] * inv));
+    od[i + 3] = 255;
+  }
+  outCtx.putImageData(outImg, 0, 0);
+}
 function zoomCrop(img, zf, ox, oy, sharpen) {
   return tf.tidy(() => {
     const h = img.shape[1], w = img.shape[2], z = Math.max(0.5, Math.min(1, zf));
@@ -699,7 +844,10 @@ async function exportVideo() {
     // a live capture, which records duplicates while frames are drawn slowly
     // and comes out glitchy.
     const exLong = EXPORT_SIZE[settings.exportSize] || 1920;
-    const exScale = Math.max(1, exLong / Math.max(card.w, card.h));
+    // Video stays at 4K max: a true 8K video would need the tiled dream on
+    // every frame of the card. 8K is for stills (exportStill dreams it).
+    const exLongCapped = Math.min(exLong, 3840);
+    const exScale = Math.max(1, exLongCapped / Math.max(card.w, card.h));
     const exCv = document.createElement("canvas");
     exCv.width = Math.round(card.w * exScale); exCv.height = Math.round(card.h * exScale);
     const exCtx = exCv.getContext("2d"); exCtx.imageSmoothingEnabled = true; exCtx.imageSmoothingQuality = "high";
@@ -707,7 +855,7 @@ async function exportVideo() {
     const vtrack = probeStream.getVideoTracks()[0];
     const manualFrames = !!(vtrack && typeof vtrack.requestFrame === "function");
     const stream2 = manualFrames ? probeStream : exCv.captureStream(30);
-    const bitrate = EXPORT_BITRATE[settings.exportSize] || 12000000;
+    const bitrate = EXPORT_BITRATE[settings.exportSize === "8k" ? "4k" : settings.exportSize] || 12000000;
     const rec = new MediaRecorder(stream2, mime ? { mimeType: mime, videoBitsPerSecond: bitrate } : { videoBitsPerSecond: bitrate });
     const chunks = []; rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     const done = new Promise(r => rec.onstop = r);
@@ -728,7 +876,7 @@ async function exportVideo() {
     const blob = new Blob(chunks, { type: mime || "video/webm" });
     const ext = (mime || "").includes("mp4") ? "mp4" : "webm";
     downloadBlob(blob, "dreamcamera-" + String(card.no).padStart(4, "0") + "." + ext);
-    setStatus("Video saved (" + (blob.size / 1048576).toFixed(1) + " MB). Also keep it in the gallery to watch later.");
+    setStatus("Video saved (" + (blob.size / 1048576).toFixed(1) + " MB" + (exLong > 3840 ? ", 4K — 8K is stills only" : "") + "). Also keep it in the gallery to watch later.");
   } catch (e) { console.error(e); setStatus("Video export failed: " + (e && e.message || e), true); }
   setBar(null); busy = false; startPlaying(); updateUI();
 }
@@ -740,9 +888,18 @@ async function exportStill() {
   const c = document.createElement("canvas"); c.width = Math.round(card.w * exScale); c.height = Math.round(card.h * exScale);
   const ctx = c.getContext("2d"); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
   ctx.drawImage(im, 0, 0, c.width, c.height); if (im && im.close) im.close();
+  // A still saved bigger than the dream is not just stretched: the extra
+  // pixels are dreamed for real, tile by tile, at the export size. That
+  // is what makes a 4K/8K still an actual 4K/8K deepdream.
+  const trueHiRes = exLong > Math.max(card.w, card.h);
+  if (trueHiRes) {
+    if (!await ensureReady()) { setStatus("Could not load the model for the high-res still.", true); return; }
+    await dreamTiled(c, settings.lr, 2, (d, t) => { setStatus("Dreaming the still at " + c.width + "×" + c.height + "… tile " + d + "/" + t); setBar(d / t); });
+    setBar(null);
+  }
   const b = await toBlob(c, "image/png", 1);
   downloadBlob(b, "dreamcamera-" + String(card.no).padStart(4, "0") + ".png");
-  setStatus("Still saved (" + c.width + "×" + c.height + ").");
+  setStatus("Still saved (" + c.width + "×" + c.height + (trueHiRes ? ", dreamed at full size" : "") + ").");
 }
 function downloadBlob(blob, name) {
   // In the app the WebView ignores the download attribute, so hand the
@@ -998,10 +1155,14 @@ let videoRunning = false, videoOutBlob = null, videoOutUrl = null;
 function setVideoStatus(t, err) { const el = $("videoStatus"); el.textContent = t; el.style.color = err ? "#ff7b7b" : "#7df9ff"; }
 function setVideoBar(p) { const b = $("videoBar"); if (p == null) { b.style.visibility = "hidden"; return; } b.style.visibility = "visible"; b.firstChild.style.width = Math.round(Math.max(0, Math.min(1, p)) * 100) + "%"; }
 function videoDims(vw, vh) {
-  const q = QUALITY[settings.quality] || QUALITY.normal;   // short side = quality
-  const short = q.w;
+  const short = parseInt(($("videoSize") && $("videoSize").value) || "512", 10) || 512;   // the video dream size — separate from the Camera quality, so a video can be dreamed big while the Camera stays fast
   if (vw >= vh) return { w: Math.round(short * vw / vh), h: short };
   return { w: short, h: Math.round(short * vh / vw) };
+}
+function detailDims(vw, vh) {
+  const long = 3840;   // 4K detail pass: long side 3840, aspect preserved
+  if (vw >= vh) return { w: long, h: Math.round(long * vh / vw) };
+  return { w: Math.round(long * vw / vh), h: long };
 }
 function switchTab(name) {
   const cam = name === "camera";
@@ -1013,18 +1174,18 @@ function switchTab(name) {
 }
 // Video presets: one tap sets mode, steps, mix, weave and zoom together.
 const VIDEO_PRESETS = {
-  gentle: { mode: "frame", steps: 1, mix: 0, weave: 0.15, zoom: false },
-  dreamweave: { mode: "dreamweave", steps: 3, mix: 0.7, weave: 0.5, zoom: true, styleZoom: 0.97, styleRate: 3, styleSteps: 3 },
-  inception: { mode: "dreamweave", steps: 5, mix: 0.8, weave: 0.6, zoom: true, styleZoom: 0.96, styleRate: 2, styleSteps: 4 },
-  transfer: { mode: "transfer", steps: 2, mix: 0.6, weave: 0.15, zoom: false },
-  slowburn: { mode: "frame", steps: 3, mix: 0, weave: 0.2, zoom: true },
-  weavelight: { mode: "dreamweave", steps: 1, mix: 0.3, weave: 0.2, zoom: false, styleZoom: 0.99, styleRate: 6, styleSteps: 1 },
-  transferdeep: { mode: "transfer", steps: 4, mix: 0.8, weave: 0.15, zoom: true },
-  hyperweave: { mode: "dreamweave", steps: 5, mix: 0.9, weave: 0.7, zoom: true, styleZoom: 0.95, styleRate: 2, styleSteps: 4 },
-  acidweave: { mode: "dreamweave", steps: 5, mix: 0.95, weave: 0.75, zoom: true, styleZoom: 0.95, styleRate: 1, styleSteps: 3 },
-  deepvortex: { mode: "dreamweave", steps: 5, mix: 0.85, weave: 0.75, zoom: true, styleZoom: 0.96, styleRate: 1, styleSteps: 3 },
-  meltdown: { mode: "dreamweave", steps: 5, mix: 0.95, weave: 0.45, zoom: true, styleZoom: 0.97, styleRate: 2, styleSteps: 5 },
-  fractaldive: { mode: "dreamweave", steps: 4, mix: 0.75, weave: 0.6, zoom: true, styleZoom: 0.94, styleRate: 3, styleSteps: 3 }
+  gentle: { mode: "frame", steps: 1, mix: 0, weave: 0.15, zoom: false, size: 256 },
+  dreamweave: { mode: "dreamweave", steps: 3, mix: 0.7, weave: 0.5, zoom: true, styleZoom: 0.97, styleRate: 3, styleSteps: 3, size: 512 },
+  inception: { mode: "dreamweave", steps: 5, mix: 0.8, weave: 0.6, zoom: true, styleZoom: 0.96, styleRate: 2, styleSteps: 4, size: 768 },
+  transfer: { mode: "transfer", steps: 2, mix: 0.6, weave: 0.15, zoom: false, size: 512 },
+  slowburn: { mode: "frame", steps: 3, mix: 0, weave: 0.2, zoom: true, size: 768 },
+  weavelight: { mode: "dreamweave", steps: 1, mix: 0.3, weave: 0.2, zoom: false, styleZoom: 0.99, styleRate: 6, styleSteps: 1, size: 384 },
+  transferdeep: { mode: "transfer", steps: 4, mix: 0.8, weave: 0.15, zoom: true, size: 768 },
+  hyperweave: { mode: "dreamweave", steps: 5, mix: 0.9, weave: 0.7, zoom: true, styleZoom: 0.95, styleRate: 2, styleSteps: 4, size: 1024 },
+  acidweave: { mode: "dreamweave", steps: 5, mix: 0.95, weave: 0.75, zoom: true, styleZoom: 0.95, styleRate: 1, styleSteps: 3, size: 1024 },
+  deepvortex: { mode: "dreamweave", steps: 5, mix: 0.85, weave: 0.75, zoom: true, styleZoom: 0.96, styleRate: 1, styleSteps: 3, size: 1024 },
+  meltdown: { mode: "dreamweave", steps: 5, mix: 0.95, weave: 0.45, zoom: true, styleZoom: 0.97, styleRate: 2, styleSteps: 5, size: 1024 },
+  fractaldive: { mode: "dreamweave", steps: 4, mix: 0.75, weave: 0.6, zoom: true, styleZoom: 0.94, styleRate: 3, styleSteps: 3, size: 768 }
 };
 function applyVideoPreset(name) {
   const p = VIDEO_PRESETS[name]; if (!p) return;
@@ -1033,6 +1194,7 @@ function applyVideoPreset(name) {
   $("videoMix").value = p.mix; $("videoMixVal").textContent = p.mix.toFixed(2);
   $("videoWeave").value = p.weave; $("videoWeaveVal").textContent = p.weave.toFixed(2);
   $("videoZoom").value = p.zoom ? "1" : "0";
+  if (p.size != null) { $("videoSize").value = String(p.size); }
   if (p.styleZoom != null) { $("videoStyleZoom").value = p.styleZoom; $("videoStyleZoomVal").textContent = p.styleZoom.toFixed(3); }
   if (p.styleRate != null) { $("videoStyleRate").value = String(p.styleRate); }
   if (p.styleSteps != null) { $("videoStyleSteps").value = p.styleSteps; $("videoStyleStepsVal").textContent = p.styleSteps; }
@@ -1108,8 +1270,17 @@ async function processVideo() {
   const fps = parseInt($("videoFps").value, 10) || 12;
   const total = Math.max(1, Math.floor(dur * fps));
   const vd = videoDims(src.videoWidth, src.videoHeight);
+  // 4K detail pass: each dreamed frame is upscaled to 3840 on the long
+  // side and dreamed again at that size, tile by tile — real 4K detail,
+  // not an upscale. It is slow (~20-30s a frame), so it is opt-in.
+  const detailOn = $("videoDetail") && $("videoDetail").value === "4k";
+  const hiD = detailOn ? detailDims(src.videoWidth, src.videoHeight) : null;
   const inCv = document.createElement("canvas"); inCv.width = vd.w; inCv.height = vd.h;
   const outCv = document.createElement("canvas"); outCv.width = vd.w; outCv.height = vd.h;
+  const hiCv = detailOn ? document.createElement("canvas") : null;
+  if (hiCv) { hiCv.width = hiD.w; hiCv.height = hiD.h; }
+  const dispCv = detailOn ? hiCv : outCv;   // what the recorder + preview show
+  const tileScratch = detailOn ? {} : null;   // reused across frames, so the 4K canvases are not re-allocated every frame
   let styleT = null;
   if (mode !== "frame") { setVideoStatus("Dreaming the style photo…"); styleT = await makeStyleTexture(vd.w, vd.h); }
   // Record one frame per dreamed frame, not in real time: each frame takes
@@ -1118,17 +1289,18 @@ async function processVideo() {
   // minutes long, choppy and glitchy. captureStream(0) + requestFrame
   // captures exactly one frame per draw, so the video is the right length
   // and smooth. (Falls back to the live stream if requestFrame is missing.)
-  const probeStream = outCv.captureStream(0);
+  const probeStream = dispCv.captureStream(0);
   const vtrack = probeStream.getVideoTracks()[0];
   const manualFrames = !!(vtrack && typeof vtrack.requestFrame === "function");
-  const stream = manualFrames ? probeStream : outCv.captureStream(fps);
+  const stream = manualFrames ? probeStream : dispCv.captureStream(fps);
   const mime = videoMime();
+  const vbitrate = detailOn ? 30000000 : 8000000;   // 4K needs a real bitrate or it comes out blocky
   // The recorder must not wedge the run: if it cannot start, say so and
   // give the button back instead of leaving Dream disabled forever.
   let rec, done;
   const chunks = [];
   try {
-    rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8000000 } : { videoBitsPerSecond: 8000000 });
+    rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: vbitrate } : { videoBitsPerSecond: vbitrate });
     rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     done = new Promise(r => rec.onstop = r);
     rec.start(200);
@@ -1176,7 +1348,18 @@ async function processVideo() {
       const steps = parseInt($("videoSteps").value, 10) || 2;
       cur = dreamSteps(cur, settings.lr, steps, true);
       await tensorToCanvas(cur, outCv);
-      pv.getContext("2d").drawImage(outCv, 0, 0);   // live preview: the new frame, in order
+      if (detailOn) {
+        // Upscale to 4K, then dream the 4K frame for real, tile by tile.
+        const hx = hiCv.getContext("2d");
+        hx.clearRect(0, 0, hiD.w, hiD.h);
+        hx.drawImage(outCv, 0, 0, hiD.w, hiD.h);
+        await dreamTiled(hiCv, settings.lr, 2, (d, t) => {
+          setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + " · 4K detail tile " + d + "/" + t);
+        }, tileScratch);
+        pv.getContext("2d").drawImage(hiCv, 0, 0, pv.width, pv.height);
+      } else {
+        pv.getContext("2d").drawImage(outCv, 0, 0);   // live preview: the new frame, in order
+      }
       if (prev) prev.dispose();
       prev = cur;
       setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total);
@@ -1200,7 +1383,7 @@ async function processVideo() {
     videoOutUrl = URL.createObjectURL(videoOutBlob);
     $("vidOut").src = videoOutUrl;
     $("videoHint").textContent = "";
-    setVideoStatus("Done — " + total + " frames. Watch it above, or save it.");
+    setVideoStatus("Done — " + total + " frames · " + (detailOn ? hiD.w + "×" + hiD.h + " true 4K" : vd.w + "×" + vd.h) + ". Watch it above, or save it.");
   } else {
     videoOutBlob = null;
     $("videoHint").textContent = "Dreamed video plays here";
