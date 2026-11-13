@@ -183,7 +183,7 @@ const PRESETS = [
   { m: "zentangledream", name: "Zentangle weave", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["block_10_project_BN", "block_13_project_BN"] } },
   { m: "zentangledream", name: "Zentangle bloom", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["block_16_project_BN"] } },
 ];
-const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live", exportSize: "1080p" };
+const DEFAULTS = { model: "v1", preset: 0, path: "straight", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live", exportSize: "1080p", hueSpin: 0, saturation: 1, pulse: 0 };
 
 // ===== STATE =====
 const vid = $("vid"), artCv = $("artCv");
@@ -461,7 +461,15 @@ function dreamStep(img, lr) {
 // not an upscale. One tile is ~0.3s, so a 4K frame is ~50 tiles (~20s)
 // and an 8K frame ~220 tiles (~2 min).
 const TILE_SIZE = 512, TILE_OVERLAP = 128;
-function getTileMask(oLeft, oRight, oTop, oBottom) {
+function tileSizeForModel() {
+  // A fixed-size model dreams at its native size — a 512 tile would be
+  // downscaled to 224 and back, softening the detail. So tile at the
+  // model's own size instead (224 for zentangledream / MobileNet / ResNet
+  // / DenseNet, 299 for InceptionResNetV2). Free-size models use 512.
+  return MODEL.fixedSize || TILE_SIZE;
+}
+function tileOverlapForModel(ts) { return ts === TILE_SIZE ? TILE_OVERLAP : 64; }
+function getTileMask(oLeft, oRight, oTop, oBottom, ts) {
   // Feather weight for a tile: 1 in the middle, ramping to 0 over the
   // overlap at each edge. Each overlap is the tile's ACTUAL overlap with
   // its neighbour on that side (even spacing makes them nearly equal, but
@@ -471,21 +479,21 @@ function getTileMask(oLeft, oRight, oTop, oBottom) {
   // dimmed. The weight is the product of the horizontal and vertical
   // ramps, so neighbouring tiles' weights sum to exactly 1 in every
   // overlap, corners included.
-  const key = [oLeft, oRight, oTop, oBottom].join(",");
+  const key = [oLeft, oRight, oTop, oBottom, ts].join(",");
   if (getTileMask.cache[key]) return getTileMask.cache[key];
-  const c = document.createElement("canvas"); c.width = TILE_SIZE; c.height = TILE_SIZE;
+  const c = document.createElement("canvas"); c.width = ts; c.height = ts;
   const ctx = c.getContext("2d");
-  const img = ctx.createImageData(TILE_SIZE, TILE_SIZE);
+  const img = ctx.createImageData(ts, ts);
   const d = img.data;
-  for (let y = 0; y < TILE_SIZE; y++) {
+  for (let y = 0; y < ts; y++) {
     // Each ramp is clamped to 1 on its own: a pixel far from both edges
     // of an axis has weight 1 on that axis, not the raw (large) ratio —
     // without the clamp the product overshoots and the blend sums to ~2.
-    const wy = Math.max(0, Math.min(1, Math.min(oTop == null ? 1 : (y + 0.5) / oTop, oBottom == null ? 1 : (TILE_SIZE - y - 0.5) / oBottom)));
-    for (let x = 0; x < TILE_SIZE; x++) {
-      const wx = Math.max(0, Math.min(1, Math.min(oLeft == null ? 1 : (x + 0.5) / oLeft, oRight == null ? 1 : (TILE_SIZE - x - 0.5) / oRight)));
+    const wy = Math.max(0, Math.min(1, Math.min(oTop == null ? 1 : (y + 0.5) / oTop, oBottom == null ? 1 : (ts - y - 0.5) / oBottom)));
+    for (let x = 0; x < ts; x++) {
+      const wx = Math.max(0, Math.min(1, Math.min(oLeft == null ? 1 : (x + 0.5) / oLeft, oRight == null ? 1 : (ts - x - 0.5) / oRight)));
       const w = wx * wy;
-      const i = (y * TILE_SIZE + x) * 4;
+      const i = (y * ts + x) * 4;
       d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; d[i + 3] = Math.round(w * 255);
     }
   }
@@ -494,14 +502,14 @@ function getTileMask(oLeft, oRight, oTop, oBottom) {
   return c;
 }
 getTileMask.cache = {};
-function tileAxis(W) {
-  // Evenly spaced tile positions covering [0, W - TILE_SIZE]. The stride
-  // is kept between 256 and 448 (overlap 64–256), so no tile is ever in
-  // two overlaps at once. Target stride is 384 (overlap 128).
-  const Q = W - TILE_SIZE;
+function tileAxis(W, ts, ov) {
+  // Evenly spaced tile positions covering [0, W - ts]. The stride is kept
+  // between half the tile and (tile - 32) (overlap 32 to half the tile),
+  // so no tile is ever in two overlaps at once. Target stride is ts - ov.
+  const Q = W - ts;
   if (Q <= 0) return [0];
-  const mLo = Math.ceil(Q / 448), mHi = Math.floor(Q / 256);
-  let m = Math.round(Q / (TILE_SIZE - TILE_OVERLAP));
+  const mLo = Math.ceil(Q / (ts - 32)), mHi = Math.floor(Q / Math.ceil(ts / 2));
+  let m = Math.round(Q / (ts - ov));
   if (mLo <= mHi) m = Math.max(mLo, Math.min(mHi, m));
   if (m < 1) m = 1;
   const pos = [];
@@ -515,8 +523,12 @@ async function dreamTiled(cv, lr, steps, onTile, scratch) {
   // instead of allocating a 4K canvas per frame.
   const W = cv.width, H = cv.height;
   if (W <= 0 || H <= 0) return;
+  // The tile size follows the model: a fixed-size model (zentangledream,
+  // MobileNet, ResNet, DenseNet, InceptionResNetV2) tiles at its native
+  // size so nothing is downscaled and back; free-size models use 512.
+  const ts = tileSizeForModel(), ov = tileOverlapForModel(ts);
   // A small image is just dreamed whole — no tiling needed.
-  if (W <= TILE_SIZE && H <= TILE_SIZE) {
+  if (W <= ts && H <= ts) {
     let t = canvasToTensor(cv);
     t = dreamSteps(t, lr, steps, true);
     await tensorToCanvas(t, cv);
@@ -524,23 +536,23 @@ async function dreamTiled(cv, lr, steps, onTile, scratch) {
     if (onTile) onTile(1, 1);
     return;
   }
+  const scratchPassed = scratch != null;   // a video passes its own scratch in and reuses it across frames; a still makes its own and frees it after
   scratch = scratch || {};
   if (!scratch.resCv || scratch.resCv.width !== W || scratch.resCv.height !== H) {
     scratch.resCv = document.createElement("canvas"); scratch.resCv.width = W; scratch.resCv.height = H;
-    scratch.wCv = document.createElement("canvas"); scratch.wCv.width = W; scratch.wCv.height = H;
-    scratch.tileCv = document.createElement("canvas"); scratch.tileCv.width = TILE_SIZE; scratch.tileCv.height = TILE_SIZE;
-    scratch.tmpCv = document.createElement("canvas"); scratch.tmpCv.width = TILE_SIZE; scratch.tmpCv.height = TILE_SIZE;
+    scratch.tileCv = document.createElement("canvas"); scratch.tileCv.width = ts; scratch.tileCv.height = ts;
+    scratch.tmpCv = document.createElement("canvas"); scratch.tmpCv.width = ts; scratch.tmpCv.height = ts;
   }
-  const resCtx = scratch.resCv.getContext("2d"), wCtx = scratch.wCv.getContext("2d");
+  const resCtx = scratch.resCv.getContext("2d");
   const tileCtx = scratch.tileCv.getContext("2d"), tmpCtx = scratch.tmpCv.getContext("2d");
-  resCtx.clearRect(0, 0, W, H); wCtx.clearRect(0, 0, W, H);
+  resCtx.clearRect(0, 0, W, H);
   // Tile grid: evenly spaced positions, so every overlap is about the
   // same width. A stride grid with a clamped last tile makes one overlap
   // up to 400px wide, and then a tile sits in two overlaps at once and
   // the feather weights sum to ~1.1 instead of 1 (a bright band). Even
-  // spacing keeps every overlap between 64 and 256px, so no tile is ever
-  // in two overlaps at once and the weights always sum to 1.
-  const xs = tileAxis(W), ys = tileAxis(H);
+  // spacing keeps every overlap between 32px and half the tile, so no tile
+  // is ever in two overlaps at once and the weights always sum to 1.
+  const xs = tileAxis(W, ts, ov), ys = tileAxis(H, ts, ov);
   const total = xs.length * ys.length;
   let done = 0;
   for (let yi = 0; yi < ys.length; yi++) for (let xi = 0; xi < xs.length; xi++) {
@@ -548,53 +560,46 @@ async function dreamTiled(cv, lr, steps, onTile, scratch) {
     // Each edge's ramp spans that side's actual overlap with its
     // neighbour (a border edge has none). The overlaps come from the grid
     // positions, so the two tiles sharing an overlap always agree on it.
-    const oLeft = xi === 0 ? null : (xs[xi - 1] + TILE_SIZE) - tx;
-    const oRight = xi === xs.length - 1 ? null : (tx + TILE_SIZE) - xs[xi + 1];
-    const oTop = yi === 0 ? null : (ys[yi - 1] + TILE_SIZE) - ty;
-    const oBottom = yi === ys.length - 1 ? null : (ty + TILE_SIZE) - ys[yi + 1];
+    const oLeft = xi === 0 ? null : (xs[xi - 1] + ts) - tx;
+    const oRight = xi === xs.length - 1 ? null : (tx + ts) - xs[xi + 1];
+    const oTop = yi === 0 ? null : (ys[yi - 1] + ts) - ty;
+    const oBottom = yi === ys.length - 1 ? null : (ty + ts) - ys[yi + 1];
     // Extract + dream the tile.
-    tileCtx.clearRect(0, 0, TILE_SIZE, TILE_SIZE);
-    tileCtx.drawImage(cv, tx, ty, TILE_SIZE, TILE_SIZE, 0, 0, TILE_SIZE, TILE_SIZE);
+    tileCtx.clearRect(0, 0, ts, ts);
+    tileCtx.drawImage(cv, tx, ty, ts, ts, 0, 0, ts, ts);
     let t = canvasToTensor(scratch.tileCv);
     t = dreamSteps(t, lr, steps, true);
     await tensorToCanvas(t, scratch.tileCv);
     t.dispose();
-    // Feather mask for this tile (cached by its four overlaps).
-    const mask = getTileMask(oLeft, oRight, oTop, oBottom);
+    // Feather mask for this tile (cached by its four overlaps + size).
+    const mask = getTileMask(oLeft, oRight, oTop, oBottom, ts);
     // tmp = dreamed tile with alpha = weight.
-    tmpCtx.clearRect(0, 0, TILE_SIZE, TILE_SIZE);
+    tmpCtx.clearRect(0, 0, ts, ts);
     tmpCtx.drawImage(scratch.tileCv, 0, 0);
     tmpCtx.globalCompositeOperation = "destination-in";
     tmpCtx.drawImage(mask, 0, 0);
     tmpCtx.globalCompositeOperation = "source-over";
-    // Accumulate: result += tile*weight, weight += weight. 'lighter' adds
-    // source*alpha, and the weights sum to 1, so nothing clips.
+    // Accumulate: result += tile*weight. 'lighter' adds source*alpha,
+    // and the weights sum to 1, so nothing clips and the accumulation IS
+    // the final image. There is no weight canvas and no normalize pass:
+    // the old normalize held three 8K ImageData objects (~400MB) at once,
+    // which is what crashed the app on 8K.
     resCtx.globalCompositeOperation = "lighter";
     resCtx.drawImage(scratch.tmpCv, tx, ty);
     resCtx.globalCompositeOperation = "source-over";
-    wCtx.globalCompositeOperation = "lighter";
-    wCtx.drawImage(mask, tx, ty);
-    wCtx.globalCompositeOperation = "source-over";
     done++;
     if (onTile) onTile(done, total);
     await tf.nextFrame();
   }
-  // Normalize: out = result / weight. The weights sum to 1, so this only
-  // corrects 8-bit rounding — but it also guarantees the edges are right.
-  const resImg = resCtx.getImageData(0, 0, W, H);
-  const wImg = wCtx.getImageData(0, 0, W, H);
+  // The accumulation is the final image (weights sum to 1) — just draw
+  // it back onto the canvas. No ImageData pass: that was the 8K crash.
   const outCtx = cv.getContext("2d");
-  const outImg = outCtx.getImageData(0, 0, W, H);
-  const rd = resImg.data, wd = wImg.data, od = outImg.data;
-  for (let i = 0; i < od.length; i += 4) {
-    const wsum = wd[i] / 255;   // weight canvas R channel = 255 * weight sum
-    const inv = wsum > 0.01 ? 1 / wsum : 1;
-    od[i] = Math.max(0, Math.min(255, rd[i] * inv));
-    od[i + 1] = Math.max(0, Math.min(255, rd[i + 1] * inv));
-    od[i + 2] = Math.max(0, Math.min(255, rd[i + 2] * inv));
-    od[i + 3] = 255;
-  }
-  outCtx.putImageData(outImg, 0, 0);
+  outCtx.clearRect(0, 0, W, H);
+  outCtx.drawImage(scratch.resCv, 0, 0);
+  // Free the accumulation canvas right away when this call made it, so
+  // the PNG encode that follows does not have to share memory with it.
+  // (A video passes its own scratch in and reuses it, so leave that one.)
+  if (!scratchPassed) { scratch.resCv.width = 0; scratch.resCv.height = 0; scratch.tileCv.width = 0; scratch.tileCv.height = 0; scratch.tmpCv.width = 0; scratch.tmpCv.height = 0; }
 }
 function zoomCrop(img, zf, ox, oy, sharpen) {
   return tf.tidy(() => {
@@ -630,6 +635,24 @@ async function tensorToCanvas(img, cv) {
   ctx.drawImage(drawCv, (tw - dw) / 2, (th - dh) / 2, dw, dh);
 }
 function noteStepTime(ms) { msPerStep = msPerStep == null ? ms : msPerStep * 0.8 + ms * 0.2; updateEstimate(); }
+// Color effects: hue spin + saturation, applied to a finished frame's
+// canvas in place. The hue is cumulative (each frame adds the spin), so
+// the colours cycle as the dream runs — very trippy. It is a post-process
+// on the finished frame, so it bakes into the saved video/still (the
+// recorder and the gallery capture this canvas). A temp canvas holds the
+// filtered copy so the filter never reads from a canvas it is writing to.
+// If the browser has no canvas filter support this is a silent no-op.
+const fxCv = document.createElement("canvas");
+function applyColorFx(cv, hueDeg, sat) {
+  if ((!hueDeg || hueDeg === 0) && (!sat || sat === 1)) return;
+  if (fxCv.width !== cv.width || fxCv.height !== cv.height) { fxCv.width = cv.width; fxCv.height = cv.height; }
+  const fctx = fxCv.getContext("2d");
+  fctx.filter = "hue-rotate(" + (hueDeg || 0) + "deg) saturate(" + (sat || 1) + ")";
+  fctx.drawImage(cv, 0, 0);
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(fxCv, 0, 0);
+}
 function updateEstimate() {
   const el = $("estimate"); if (msPerStep == null) { el.textContent = ""; return; }
   const q = dims(), perFrame = msPerStep * settings.steps / 1000, run = perFrame * settings.frames;
@@ -684,7 +707,10 @@ async function startDream() {
       setStatus("Switched to " + LABEL[engineOrder[engineIdx]] + " — trying again…");
     }
   }
-  await tensorToCanvas(cur, artCv); await pushFrame();
+  await tensorToCanvas(cur, artCv);
+  hueTotal = (settings.hueSpin || 0) % 360;   // the first frame takes the first spin step
+  applyColorFx(artCv, hueTotal, settings.saturation || 1);
+  await pushFrame();
   busy = false; setBar(null);
   setStatus("Dreaming. Falling in — " + settings.frames + " frames.");
   updateUI();
@@ -718,7 +744,8 @@ async function ensureCur() {
 const ZOOM_CAP = 3;   // kept for loading old saves (zoomTotal); the zoom itself no longer caps
 const ZOOM_MAX = 16;  // total magnification vs the seed: the zoom eases to a stop here
 let deep = null, deepZoom = 1, viewDepth = 1, driftX = 0, driftY = 0, lastViewDepth = 1;
-function resetDeep() { if (deep) { deep.dispose(); deep = null; } deepZoom = 1; viewDepth = 1; driftX = 0; driftY = 0; lastViewDepth = 1; }
+let hueTotal = 0;   // cumulative hue rotation for the Color spin effect; resets with a new dream
+function resetDeep() { if (deep) { deep.dispose(); deep = null; } deepZoom = 1; viewDepth = 1; driftX = 0; driftY = 0; lastViewDepth = 1; hueTotal = 0; }
 async function zoomRun() {
   if (!card || busy || zooming || !card.frames.length) return;
   zooming = true; stopPlaying();   // the playback loop must not keep drawing old frames into the canvas while the dream runs — that was the past-50 jump: Continue started a run with playback still live
@@ -759,7 +786,7 @@ async function zoomRun() {
         const t0 = performance.now();
         // Dream strength eases down with total frames but never fades out:
         // a long dream keeps dreaming, just gentler.
-        const lrEff = settings.lr * (0.35 + 0.65 / (1 + card.frames.length * 0.012)) * dreamEase;
+        const lrEff = settings.lr * (0.35 + 0.65 / (1 + card.frames.length * 0.012)) * dreamEase * (1 + (settings.pulse || 0) * Math.sin(made * 0.25));   // Pulse: the dream strength breathes in and out, one full breath every ~25 frames
         deep = dreamSteps(deep, lrEff, settings.steps, true);   // dream new layers in at this zoom
         // Ran out of pixels? Upscale so the dream has fresh room to grow.
         const longSide = Math.max(deep.shape[1], deep.shape[2]);
@@ -772,6 +799,8 @@ async function zoomRun() {
         }
         lastViewDepth = viewDepth; card.viewDepth = viewDepth;
         await tensorToCanvas(deep, artCv); noteStepTime((performance.now() - t0) / Math.max(1, settings.steps));
+        hueTotal = (hueTotal + (settings.hueSpin || 0)) % 360;   // Color spin: the hue keeps cycling as the dream falls in
+        applyColorFx(artCv, hueTotal, settings.saturation || 1);
         await pushFrame(); made++;
         setStatus("Zooming… frame " + made + " of " + want + " · " + Math.max(deep.shape[1], deep.shape[2]) + "px · " + viewDepth.toFixed(1) + "× · " + card.frames.length + " total");
         setBar(made / want);
@@ -1050,7 +1079,7 @@ function applyPreset(i) {
   syncControls(); buildLayers(); saveSettings();
 }
 function syncControls() {
-  const map = { steps: "steps", lr: "lr", zoomFactor: "zoomFactor", range: "range", segFrames: "segFrames", frames: "frames", playFps: "playFps", playFpsOut: "playFpsOut", sharpen: "sharpen", octaves: "octaves", jitter: "jitter" };
+  const map = { steps: "steps", lr: "lr", zoomFactor: "zoomFactor", range: "range", segFrames: "segFrames", frames: "frames", playFps: "playFps", playFpsOut: "playFpsOut", sharpen: "sharpen", octaves: "octaves", jitter: "jitter", hueSpin: "hueSpin", saturation: "saturation", pulse: "pulse" };
   for (const id of Object.keys(map)) { const el = $(id); el.value = settings[map[id]]; const v = $(id + "Val"); if (v) v.textContent = fmtVal(id, settings[map[id]]); }
   $("path").value = settings.path; $("quality").value = settings.quality; $("ratio").value = settings.ratio || "1:1";
   $("exportSize").value = settings.exportSize || "1080p";
@@ -1063,6 +1092,9 @@ function fmtVal(id, v) {
   if (id === "zoomFactor") return (+v).toFixed(3);
   if (id === "range") return (+v).toFixed(2);
   if (id === "sharpen") return (+v).toFixed(2);
+  if (id === "hueSpin") return (+v).toFixed(1);
+  if (id === "saturation") return (+v).toFixed(2);
+  if (id === "pulse") return (+v).toFixed(2);
   return String(v);
 }
 function initControls() {
@@ -1077,6 +1109,9 @@ function initControls() {
   bindRange("sharpen", "sharpen", v => (+v).toFixed(2));
   bindRange("octaves", "octaves", v => String(v));
   bindRange("jitter", "jitter", v => String(v), () => { JITTER = settings.jitter; });
+  bindRange("hueSpin", "hueSpin", v => (+v).toFixed(1));
+  bindRange("saturation", "saturation", v => (+v).toFixed(2));
+  bindRange("pulse", "pulse", v => (+v).toFixed(2));
   $("path").value = settings.path;
   $("path").addEventListener("change", () => { settings.path = $("path").value; saveSettings(); });
   $("quality").value = settings.quality;
@@ -1314,7 +1349,7 @@ async function processVideo() {
   const pv = $("vidPrev"); pv.width = vd.w; pv.height = vd.h; pv.style.display = "block";
   $("vidOut").style.display = "none";
   $("videoHint").textContent = "Dreaming… watch it build here.";
-  let prev = null;
+  let prev = null, vHueTotal = 0;   // vHueTotal: the video's own cumulative hue for Color spin (separate from the Camera's)
   try {
     for (let i = 0; i < total && videoRunning; i++) {
       const seeked = await seekTo(src, Math.min(i / fps, Math.max(0, dur - 0.001)));
@@ -1343,10 +1378,12 @@ async function processVideo() {
         cur.dispose(); cur = b;
       }
       if ($("videoZoom").value === "1") {   // zoom in a touch every frame, like the still dream
-        const z = zoomCrop(cur, 0.998, 0, 0, 0); cur.dispose(); cur = z;
+        const zSpeed = parseFloat($("videoZoomSpeed").value) || 0.998;   // Zoom speed: how fast the video zooms
+        const z = zoomCrop(cur, zSpeed, 0, 0, 0); cur.dispose(); cur = z;
       }
       const steps = parseInt($("videoSteps").value, 10) || 2;
-      cur = dreamSteps(cur, settings.lr, steps, true);
+      const pulseF = 1 + (parseFloat($("videoPulse").value) || 0) * Math.sin(i * 0.25);   // Pulse: the dream strength breathes, one full breath every ~25 frames
+      cur = dreamSteps(cur, settings.lr * pulseF, steps, true);
       await tensorToCanvas(cur, outCv);
       if (detailOn) {
         // Upscale to 4K, then dream the 4K frame for real, tile by tile.
@@ -1356,10 +1393,13 @@ async function processVideo() {
         await dreamTiled(hiCv, settings.lr, 2, (d, t) => {
           setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + " · 4K detail tile " + d + "/" + t);
         }, tileScratch);
-        pv.getContext("2d").drawImage(hiCv, 0, 0, pv.width, pv.height);
-      } else {
-        pv.getContext("2d").drawImage(outCv, 0, 0);   // live preview: the new frame, in order
       }
+      // Color spin + pop: the hue keeps cycling as the video plays, and
+      // the saturation pops. Applied to the display canvas, so the live
+      // preview and the recording both get it.
+      vHueTotal = (vHueTotal + (parseFloat($("videoHueSpin").value) || 0)) % 360;
+      applyColorFx(dispCv, vHueTotal, parseFloat($("videoSaturation").value) || 1);
+      pv.getContext("2d").drawImage(dispCv, 0, 0, pv.width, pv.height);   // live preview: the new frame, in order
       if (prev) prev.dispose();
       prev = cur;
       setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total);
@@ -1402,6 +1442,10 @@ function initVideoTab() {
   $("videoWeave").addEventListener("input", () => { $("videoWeaveVal").textContent = (+$("videoWeave").value).toFixed(2); });
   $("videoStyleZoom").addEventListener("input", () => { $("videoStyleZoomVal").textContent = (+$("videoStyleZoom").value).toFixed(3); });
   $("videoStyleSteps").addEventListener("input", () => { $("videoStyleStepsVal").textContent = $("videoStyleSteps").value; });
+  $("videoZoomSpeed").addEventListener("input", () => { $("videoZoomSpeedVal").textContent = (+$("videoZoomSpeed").value).toFixed(3); });
+  $("videoHueSpin").addEventListener("input", () => { $("videoHueSpinVal").textContent = (+$("videoHueSpin").value).toFixed(1); });
+  $("videoSaturation").addEventListener("input", () => { $("videoSaturationVal").textContent = (+$("videoSaturation").value).toFixed(2); });
+  $("videoPulse").addEventListener("input", () => { $("videoPulseVal").textContent = (+$("videoPulse").value).toFixed(2); });
   $("videoPickBtn").onclick = () => $("videoIn").click();
   $("videoIn").addEventListener("change", () => {
     const f = $("videoIn").files[0]; if (!f) return;
