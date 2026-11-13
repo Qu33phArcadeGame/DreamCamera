@@ -76,7 +76,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.22</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.23</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">📷 Camera</button>
@@ -141,6 +141,12 @@
         <input type="range" id="octaves" min="1" max="3" step="1"></label>
       <label><b>Jitter <span class="val" id="jitterVal"></span></b>
         <input type="range" id="jitter" min="0" max="48" step="1"></label>
+      <label><b>Color spin <span class="val" id="hueSpinVal"></span></b>
+        <input type="range" id="hueSpin" min="0" max="10" step="0.5"></label>
+      <label><b>Color pop <span class="val" id="saturationVal"></span></b>
+        <input type="range" id="saturation" min="1" max="2.5" step="0.05"></label>
+      <label><b>Pulse <span class="val" id="pulseVal"></span></b>
+        <input type="range" id="pulse" min="0" max="0.8" step="0.05"></label>
       <label><b>Camera</b>
         <select id="facing"><option value="environment">Back</option><option value="user">Front</option></select></label>
       <label><b>Model source</b>
@@ -227,7 +233,7 @@
         <label id="mixRow"><b>Style mix <span class="val" id="videoMixVal">0.70</span></b>
           <input type="range" id="videoMix" min="0" max="1" step="0.05" value="0.7"></label>
         <label id="weaveRow"><b>Weave <span class="val" id="videoWeaveVal">0.50</span></b>
-          <input type="range" id="videoWeave" min="0" max="0.75" step="0.05" value="0.5"></label>
+          <input type="range" id="videoWeave" min="0" max="0.9" step="0.05" value="0.5"></label>
         <label id="styleZoomRow"><b>Style zoom <span class="val" id="videoStyleZoomVal">0.970</span></b>
           <input type="range" id="videoStyleZoom" min="0.90" max="0.995" step="0.005" value="0.97"></label>
         <label id="styleRateRow"><b>Style dreams</b>
@@ -236,6 +242,14 @@
           <input type="range" id="videoStyleSteps" min="1" max="5" step="1" value="3"></label>
         <label class="full"><b>Zoom in while dreaming</b>
           <select id="videoZoom"><option value="1" selected>On · the video slowly zooms as it dreams</option><option value="0">Off · framing stays put</option></select></label>
+        <label><b>Zoom speed <span class="val" id="videoZoomSpeedVal">0.998</span></b>
+          <input type="range" id="videoZoomSpeed" min="0.990" max="1.000" step="0.001" value="0.998"></label>
+        <label><b>Color spin <span class="val" id="videoHueSpinVal">0</span></b>
+          <input type="range" id="videoHueSpin" min="0" max="10" step="0.5" value="0"></label>
+        <label><b>Color pop <span class="val" id="videoSaturationVal">1.00</span></b>
+          <input type="range" id="videoSaturation" min="1" max="2.5" step="0.05" value="1"></label>
+        <label><b>Pulse <span class="val" id="videoPulseVal">0.00</span></b>
+          <input type="range" id="videoPulse" min="0" max="0.8" step="0.05" value="0"></label>
         <label class="full"><b>Detail pass</b>
           <select id="videoDetail"><option value="0" selected>Off · dream size only</option><option value="4k">4K · real detail, dreamed tile by tile (slow)</option></select>
           <span class="val">Turns each dreamed frame into true 4K — the frame is dreamed again at 3840px, tile by tile, so the detail is real, not an upscale. A 15s clip can take over an hour; short clips are quick.</span></label>
