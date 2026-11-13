@@ -1014,14 +1014,17 @@ function switchTab(name) {
 // Video presets: one tap sets mode, steps, mix, weave and zoom together.
 const VIDEO_PRESETS = {
   gentle: { mode: "frame", steps: 1, mix: 0, weave: 0.15, zoom: false },
-  dreamweave: { mode: "dreamweave", steps: 3, mix: 0.7, weave: 0.5, zoom: true },
-  inception: { mode: "dreamweave", steps: 5, mix: 0.8, weave: 0.6, zoom: true },
+  dreamweave: { mode: "dreamweave", steps: 3, mix: 0.7, weave: 0.5, zoom: true, styleZoom: 0.97, styleRate: 3, styleSteps: 3 },
+  inception: { mode: "dreamweave", steps: 5, mix: 0.8, weave: 0.6, zoom: true, styleZoom: 0.96, styleRate: 2, styleSteps: 4 },
   transfer: { mode: "transfer", steps: 2, mix: 0.6, weave: 0.15, zoom: false },
   slowburn: { mode: "frame", steps: 3, mix: 0, weave: 0.2, zoom: true },
-  weavelight: { mode: "dreamweave", steps: 1, mix: 0.3, weave: 0.2, zoom: false },
+  weavelight: { mode: "dreamweave", steps: 1, mix: 0.3, weave: 0.2, zoom: false, styleZoom: 0.99, styleRate: 6, styleSteps: 1 },
   transferdeep: { mode: "transfer", steps: 4, mix: 0.8, weave: 0.15, zoom: true },
-  hyperweave: { mode: "dreamweave", steps: 5, mix: 0.9, weave: 0.7, zoom: true },
-  acidweave: { mode: "dreamweave", steps: 5, mix: 0.95, weave: 0.75, zoom: true }
+  hyperweave: { mode: "dreamweave", steps: 5, mix: 0.9, weave: 0.7, zoom: true, styleZoom: 0.95, styleRate: 2, styleSteps: 4 },
+  acidweave: { mode: "dreamweave", steps: 5, mix: 0.95, weave: 0.75, zoom: true, styleZoom: 0.95, styleRate: 1, styleSteps: 3 },
+  deepvortex: { mode: "dreamweave", steps: 5, mix: 0.85, weave: 0.75, zoom: true, styleZoom: 0.96, styleRate: 1, styleSteps: 3 },
+  meltdown: { mode: "dreamweave", steps: 5, mix: 0.95, weave: 0.45, zoom: true, styleZoom: 0.97, styleRate: 2, styleSteps: 5 },
+  fractaldive: { mode: "dreamweave", steps: 4, mix: 0.75, weave: 0.6, zoom: true, styleZoom: 0.94, styleRate: 3, styleSteps: 3 }
 };
 function applyVideoPreset(name) {
   const p = VIDEO_PRESETS[name]; if (!p) return;
@@ -1030,6 +1033,9 @@ function applyVideoPreset(name) {
   $("videoMix").value = p.mix; $("videoMixVal").textContent = p.mix.toFixed(2);
   $("videoWeave").value = p.weave; $("videoWeaveVal").textContent = p.weave.toFixed(2);
   $("videoZoom").value = p.zoom ? "1" : "0";
+  if (p.styleZoom != null) { $("videoStyleZoom").value = p.styleZoom; $("videoStyleZoomVal").textContent = p.styleZoom.toFixed(3); }
+  if (p.styleRate != null) { $("videoStyleRate").value = String(p.styleRate); }
+  if (p.styleSteps != null) { $("videoStyleSteps").value = p.styleSteps; $("videoStyleStepsVal").textContent = p.styleSteps; }
   videoModeNote();
 }
 function videoModeNote() {
@@ -1044,6 +1050,9 @@ function videoModeNote() {
   $("styleRow").style.display = needStyle ? "" : "none";
   $("mixRow").style.display = needStyle ? "" : "none";
   $("weaveRow").style.display = m === "dreamweave" ? "" : "none";
+  $("styleZoomRow").style.display = m === "dreamweave" ? "" : "none";
+  $("styleRateRow").style.display = m === "dreamweave" ? "" : "none";
+  $("styleStepsRow").style.display = m === "dreamweave" ? "" : "none";
 }
 function updateVideoUI() {
   $("videoDreamBtn").disabled = videoRunning || !videoMeta;
@@ -1146,11 +1155,16 @@ async function processVideo() {
         cur.dispose(); cur = w;
       }
       if (mode !== "frame" && styleT) {
-        if (mode === "dreamweave" && i % 3 === 0) {   // the style itself dreams, four times a second — it visibly morphs as the video plays
+        // The style knobs are read live, so you can turn the zoom or the
+        // morph speed up and down while the video is dreaming.
+        const styleRate = parseInt($("videoStyleRate").value, 10) || 3;
+        if (mode === "dreamweave" && i % styleRate === 0) {   // the style itself dreams — it visibly morphs and dives into the photo as the video plays
           // The style zooms in and dreams along with the video — extra
           // inception: the overlay is a living dream, not a static picture.
-          const zs = zoomCrop(styleT, 0.985, 0, 0, 0); styleT.dispose(); styleT = zs;
-          styleT = dreamSteps(styleT, settings.lr, 3, false);
+          const sz = parseFloat($("videoStyleZoom").value) || 0.97;
+          const ss = parseInt($("videoStyleSteps").value, 10) || 3;
+          const zs = zoomCrop(styleT, sz, 0, 0, 0); styleT.dispose(); styleT = zs;
+          styleT = dreamSteps(styleT, settings.lr, ss, false);
         }
         const mix = parseFloat($("videoMix").value) || 0.5;
         const b = tf.tidy(() => cur.mul(1 - mix).add(styleT.mul(mix)));
@@ -1203,6 +1217,8 @@ function initVideoTab() {
   $("videoSteps").addEventListener("input", () => { $("videoStepsVal").textContent = $("videoSteps").value; });
   $("videoMix").addEventListener("input", () => { $("videoMixVal").textContent = (+$("videoMix").value).toFixed(2); });
   $("videoWeave").addEventListener("input", () => { $("videoWeaveVal").textContent = (+$("videoWeave").value).toFixed(2); });
+  $("videoStyleZoom").addEventListener("input", () => { $("videoStyleZoomVal").textContent = (+$("videoStyleZoom").value).toFixed(3); });
+  $("videoStyleSteps").addEventListener("input", () => { $("videoStyleStepsVal").textContent = $("videoStyleSteps").value; });
   $("videoPickBtn").onclick = () => $("videoIn").click();
   $("videoIn").addEventListener("change", () => {
     const f = $("videoIn").files[0]; if (!f) return;
