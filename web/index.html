@@ -37,13 +37,20 @@
   .layers label.on{background:linear-gradient(135deg,#ff2fd6,#7b2fff);border-color:#ff2fd6;color:#fff;box-shadow:0 0 12px rgba(255,47,214,.5)}
   .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
   .row.actions button{flex:1;white-space:nowrap}
-  button{position:relative;overflow:hidden;background:#6a4fd0;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-size:15px;cursor:pointer}
+  button{position:relative;overflow:hidden;background:linear-gradient(180deg,#8a6ff0 0%,#6a4fd0 55%,#5438b8 100%);color:#fff;border:0;border-radius:999px;padding:11px 16px;font-size:15px;font-weight:600;cursor:pointer;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.35),inset 0 -2px 4px rgba(0,0,0,.25),0 4px 0 rgba(30,10,60,.55),0 8px 18px rgba(0,0,0,.45);
+    transition:transform .12s ease,box-shadow .12s ease,filter .12s ease}
   button::after{content:"";position:absolute;inset:0;background:linear-gradient(115deg,transparent 35%,rgba(255,255,255,.13) 46%,rgba(0,229,255,.15) 50%,rgba(255,47,214,.15) 54%,transparent 65%);background-size:250% 100%;animation:holo 7s linear infinite;pointer-events:none}
   @keyframes holo{from{background-position:200% 0}to{background-position:-100% 0}}
-  button:disabled{opacity:.4;cursor:default}
-  button.ghost{background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.5);color:#bff6ff}
-  button.big{flex:1;font-size:17px;font-weight:700;padding:13px;background:linear-gradient(135deg,#ff2fd6,#7b2fff 55%,#00e5ff);box-shadow:0 0 18px rgba(255,47,214,.55);animation:neonPulse 2.4s ease-in-out infinite}
-  @keyframes neonPulse{0%,100%{box-shadow:0 0 14px rgba(255,47,214,.45)}50%{box-shadow:0 0 26px rgba(0,229,255,.55)}}
+  button:active{transform:translateY(3px);box-shadow:inset 0 1px 0 rgba(255,255,255,.25),inset 0 -1px 3px rgba(0,0,0,.3),0 1px 0 rgba(30,10,60,.55),0 3px 8px rgba(0,0,0,.4)}
+  button:disabled{opacity:.4;cursor:default;transform:none}
+  button.ghost{background:linear-gradient(180deg,rgba(0,229,255,.16) 0%,rgba(0,229,255,.05) 55%,rgba(0,229,255,.02) 100%);border:1px solid rgba(0,229,255,.5);color:#bff6ff;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.18),inset 0 -2px 4px rgba(0,0,0,.2),0 3px 0 rgba(0,40,60,.5),0 6px 14px rgba(0,0,0,.4)}
+  button.ghost:active{transform:translateY(2px);box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 1px 0 rgba(0,40,60,.5),0 3px 8px rgba(0,0,0,.35)}
+  button.big{flex:1;font-size:17px;font-weight:700;padding:14px;background:linear-gradient(180deg,#ff5ce0 0%,#ff2fd6 35%,#7b2fff 70%,#00c8e5 100%);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 -3px 6px rgba(0,0,0,.3),0 5px 0 rgba(40,0,50,.6),0 10px 24px rgba(255,47,214,.45);animation:neonPulse 2.4s ease-in-out infinite}
+  button.big:active{animation:none;transform:translateY(4px);box-shadow:inset 0 1px 0 rgba(255,255,255,.3),inset 0 -2px 4px rgba(0,0,0,.35),0 1px 0 rgba(40,0,50,.6),0 4px 12px rgba(255,47,214,.35)}
+  @keyframes neonPulse{0%,100%{box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 -3px 6px rgba(0,0,0,.3),0 5px 0 rgba(40,0,50,.6),0 10px 22px rgba(255,47,214,.4)}50%{box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 -3px 6px rgba(0,0,0,.3),0 5px 0 rgba(40,0,50,.6),0 10px 32px rgba(0,229,255,.55)}}
   #status{font-size:13px;min-height:18px;margin-top:10px;color:#7df9ff}
   #status.err{color:#ff7b7b}
   #bar{height:8px;background:rgba(0,229,255,.12);border-radius:4px;overflow:hidden;visibility:hidden;margin-top:6px}
@@ -51,8 +58,8 @@
   #videoBar{height:8px;background:rgba(0,229,255,.12);border-radius:4px;overflow:hidden;visibility:hidden;margin-top:6px}
   #videoBar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#ff2fd6,#00e5ff);box-shadow:0 0 10px rgba(0,229,255,.7)}
   .tabs{display:flex;gap:8px;margin:8px 0 10px;flex-shrink:0}
-  .tab{flex:1;padding:9px;border-radius:10px;font-size:15px}
-  .tab.on{background:linear-gradient(135deg,#ff2fd6,#7b2fff 55%,#00e5ff);box-shadow:0 0 14px rgba(255,47,214,.5)}
+  .tab{flex:1;padding:10px;border-radius:999px;font-size:15px}
+  .tab.on{background:linear-gradient(180deg,#ff5ce0,#ff2fd6 40%,#7b2fff 75%,#00c8e5);box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 -2px 4px rgba(0,0,0,.3),0 4px 0 rgba(40,0,50,.55),0 8px 18px rgba(255,47,214,.4)}
   /* The tab panes are flex columns that fill the space under the tabs, so
      the scroll area inside each one gets a real height and can scroll.
      (Without this the panes were plain blocks, the settings grew past the
@@ -76,7 +83,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.23</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.24</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">📷 Camera</button>
@@ -116,7 +123,10 @@
       <label><b>Zoom / frame <span class="val" id="zoomFactorVal"></span></b>
         <input type="range" id="zoomFactor" min="0.90" max="0.995" step="0.005"></label>
       <label><b>Zoom path</b>
-        <select id="path"><option value="straight">Straight</option><option value="square">Square</option><option value="triangle">Triangle</option><option value="spiral">Spiral</option><option value="wave">Wave</option></select></label>
+        <select id="path"><option value="random" selected>Random wander</option><option value="straight">Straight · hold still</option><option value="circle">Circle</option><option value="figure8">Figure 8 · infinity</option><option value="heart">Heart</option><option value="star">Star</option><option value="lissajous">Lissajous · woven</option><option value="zigzag">Zigzag</option><option value="bounce">Bounce · DVD logo</option><option value="wave">Wave</option><option value="square">Square</option><option value="triangle">Triangle</option><option value="spiral">Spiral</option><option value="leftright">Left ↔ right</option><option value="updown">Up ↕ down</option><option value="diagonal">Diagonal</option><option value="drawn">Drawn · your shape</option></select></label>
+      <div class="full"><b>Draw a path</b> <span class="val">— draw a shape, the zoom follows it</span>
+        <canvas id="drawPathCv" width="140" height="140" style="width:140px;height:140px;background:#12082a;border:1px solid rgba(255,47,214,.5);border-radius:10px;touch-action:none;display:block;margin-top:6px"></canvas>
+        <span class="row" style="margin-top:6px"><button class="ghost" id="drawClearBtn" type="button">Clear drawing</button><span class="val" id="drawHint"></span></span></div>
       <label><b>Path range <span class="val" id="rangeVal"></span></b>
         <input type="range" id="range" min="0" max="0.20" step="0.01"></label>
       <label><b>Path segment <span class="val" id="segFramesVal"></span></b>
@@ -147,6 +157,24 @@
         <input type="range" id="saturation" min="1" max="2.5" step="0.05"></label>
       <label><b>Pulse <span class="val" id="pulseVal"></span></b>
         <input type="range" id="pulse" min="0" max="0.8" step="0.05"></label>
+      <label><b>Glow <span class="val" id="glowVal"></span></b>
+        <input type="range" id="glow" min="0" max="1" step="0.05"></label>
+      <label><b>Soft <span class="val" id="softVal"></span></b>
+        <input type="range" id="soft" min="0" max="3" step="0.25"></label>
+      <label><b>Vignette <span class="val" id="vignetteVal"></span></b>
+        <input type="range" id="vignette" min="0" max="1" step="0.05"></label>
+      <label><b>Fade <span class="val" id="fadeVal"></span></b>
+        <input type="range" id="fade" min="0" max="1" step="0.05"></label>
+      <label><b>RGB split <span class="val" id="rgbSplitVal"></span></b>
+        <input type="range" id="rgbSplit" min="0" max="20" step="1"></label>
+      <label><b>Slice shift <span class="val" id="sliceShiftVal"></span></b>
+        <input type="range" id="sliceShift" min="0" max="1" step="0.05"></label>
+      <label><b>Static <span class="val" id="staticAmtVal"></span></b>
+        <input type="range" id="staticAmt" min="0" max="1" step="0.05"></label>
+      <label><b>Pixelate <span class="val" id="pixelateVal"></span></b>
+        <input type="range" id="pixelate" min="0" max="16" step="1"></label>
+      <label><b>Invert <span class="val" id="invertAmtVal"></span></b>
+        <input type="range" id="invertAmt" min="0" max="1" step="0.05"></label>
       <label><b>Camera</b>
         <select id="facing"><option value="environment">Back</option><option value="user">Front</option></select></label>
       <label><b>Model source</b>
@@ -250,6 +278,24 @@
           <input type="range" id="videoSaturation" min="1" max="2.5" step="0.05" value="1"></label>
         <label><b>Pulse <span class="val" id="videoPulseVal">0.00</span></b>
           <input type="range" id="videoPulse" min="0" max="0.8" step="0.05" value="0"></label>
+        <label><b>Glow <span class="val" id="videoGlowVal">0.00</span></b>
+          <input type="range" id="videoGlow" min="0" max="1" step="0.05" value="0"></label>
+        <label><b>Soft <span class="val" id="videoSoftVal">0.00</span></b>
+          <input type="range" id="videoSoft" min="0" max="3" step="0.25" value="0"></label>
+        <label><b>Vignette <span class="val" id="videoVignetteVal">0.00</span></b>
+          <input type="range" id="videoVignette" min="0" max="1" step="0.05" value="0"></label>
+        <label><b>Fade <span class="val" id="videoFadeVal">0.00</span></b>
+          <input type="range" id="videoFade" min="0" max="1" step="0.05" value="0"></label>
+        <label><b>RGB split <span class="val" id="videoRgbSplitVal">0</span></b>
+          <input type="range" id="videoRgbSplit" min="0" max="20" step="1" value="0"></label>
+        <label><b>Slice shift <span class="val" id="videoSliceVal">0.00</span></b>
+          <input type="range" id="videoSlice" min="0" max="1" step="0.05" value="0"></label>
+        <label><b>Static <span class="val" id="videoStaticVal">0.00</span></b>
+          <input type="range" id="videoStatic" min="0" max="1" step="0.05" value="0"></label>
+        <label><b>Pixelate <span class="val" id="videoPixelateVal">0</span></b>
+          <input type="range" id="videoPixelate" min="0" max="16" step="1" value="0"></label>
+        <label><b>Invert <span class="val" id="videoInvertVal">0.00</span></b>
+          <input type="range" id="videoInvert" min="0" max="1" step="0.05" value="0"></label>
         <label class="full"><b>Detail pass</b>
           <select id="videoDetail"><option value="0" selected>Off · dream size only</option><option value="4k">4K · real detail, dreamed tile by tile (slow)</option></select>
           <span class="val">Turns each dreamed frame into true 4K — the frame is dreamed again at 3840px, tile by tile, so the detail is real, not an upscale. A 15s clip can take over an hour; short clips are quick.</span></label>
