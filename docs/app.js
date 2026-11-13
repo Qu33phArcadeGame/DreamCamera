@@ -81,7 +81,11 @@ const PRE = {
            lo: -2.118, hi: 2.64, noise: [-0.05, 0.05] },   // DenseNet: x/255, then (x-mean)/std per channel (RGB)
 };
 const WASM_PATH = "tfjs/";
-const QUALITY = { turbo: { w: 192, h: 192 }, fast: { w: 256, h: 256 }, normal: { w: 384, h: 384 }, high: { w: 512, h: 512 }, ultra: { w: 768, h: 768 }, max: { w: 1024, h: 1024 }, twoK: { w: 1440, h: 1440 } };
+const QUALITY = { turbo: { w: 192, h: 192 }, fast: { w: 256, h: 256 }, normal: { w: 384, h: 384 }, high: { w: 512, h: 512 }, ultra: { w: 768, h: 768 }, max: { w: 1024, h: 1024 } };
+// No 2K (1440) live quality: the Camera dreams the whole image at once,
+// and at 1440 the model's activations run the phone out of memory and the
+// app crashes. Max 1024 is the live ceiling; true 4K/8K comes from the
+// Save still, which dreams tile by tile (bounded memory).
 // Export size is the long side of the saved video/still. A still saved
 // bigger than the dream is dreamed for real at that size, tile by tile
 // (dreamTiled) — so 4K/8K stills are actual 4K/8K deepdreams, not an
@@ -216,7 +220,8 @@ function sendLatestDreamToWidget() {
   } catch (e) {}
 }
 
-function loadSettings() { let s = {}; try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {}; } catch (e) {} return Object.assign({}, DEFAULTS, s); }
+function loadSettings() { let s = {}; try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {}; } catch (e) {} if (s.quality === "twoK") s.quality = "max";   // 2K live quality was removed (it crashed the live dream) — fall back to Max
+  return Object.assign({}, DEFAULTS, s); }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} updateEstimate(); }
 function setStatus(t, err) { const s = $("status"); s.textContent = t; s.className = err ? "err" : ""; }
 function setBar(p) { const b = $("bar"); if (p == null) { b.style.visibility = "hidden"; return; } b.style.visibility = "visible"; b.firstChild.style.width = Math.round(Math.max(0, Math.min(1, p)) * 100) + "%"; }
@@ -1238,7 +1243,7 @@ async function exportVideo() {
     await sleep(300); rec.stop(); await done;
     const blob = new Blob(chunks, { type: mime || "video/webm" });
     const ext = (mime || "").includes("mp4") ? "mp4" : "webm";
-    downloadBlob(blob, "dreamcamera-" + String(card.no).padStart(4, "0") + "." + ext);
+    await downloadBlob(blob, "dreamcamera-" + String(card.no).padStart(4, "0") + "." + ext);
     setStatus("Video saved (" + (blob.size / 1048576).toFixed(1) + " MB" + (exLong > 3840 ? ", 4K — 8K is stills only" : "") + "). Also keep it in the gallery to watch later.");
   } catch (e) { console.error(e); setStatus("Video export failed: " + (e && e.message || e), true); }
   setBar(null); busy = false; startPlaying(); updateUI();
@@ -1246,32 +1251,85 @@ async function exportVideo() {
 async function exportStill() {
   if (!card || !card.frames.length) return;
   const im = await decodeBlob(card.frames[card.frames.length - 1]);
-  const exLong = EXPORT_SIZE[settings.exportSize] || 1920;
-  const exScale = Math.max(1, exLong / Math.max(card.w, card.h));
-  const c = document.createElement("canvas"); c.width = Math.round(card.w * exScale); c.height = Math.round(card.h * exScale);
-  const ctx = c.getContext("2d"); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(im, 0, 0, c.width, c.height); if (im && im.close) im.close();
-  // A still saved bigger than the dream is not just stretched: the extra
-  // pixels are dreamed for real, tile by tile, at the export size. That
-  // is what makes a 4K/8K still an actual 4K/8K deepdream.
-  const trueHiRes = exLong > Math.max(card.w, card.h);
-  if (trueHiRes) {
-    if (!await ensureReady()) { setStatus("Could not load the model for the high-res still.", true); return; }
-    await dreamTiled(c, settings.lr, 2, (d, t) => { setStatus("Dreaming the still at " + c.width + "×" + c.height + "… tile " + d + "/" + t); setBar(d / t); });
-    setBar(null);
+  const wantLong = EXPORT_SIZE[settings.exportSize] || 1920;
+  // Try the requested size; if the high-res dream runs out of memory,
+  // fall back to 4K instead of crashing. (8K holds two 8K canvases at
+  // once, and the old PNG encode + base64 save held hundreds of MB more
+  // on top — see downloadBlob. 4K is the floor.)
+  const attempts = wantLong > 3840 ? [wantLong, 3840] : [wantLong];
+  let c = null, doneLong = 0;
+  for (const attempt of attempts) {
+    try {
+      const exScale = Math.max(1, attempt / Math.max(card.w, card.h));
+      c = document.createElement("canvas"); c.width = Math.round(card.w * exScale); c.height = Math.round(card.h * exScale);
+      const ctx = c.getContext("2d"); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(im, 0, 0, c.width, c.height);
+      const trueHiRes = attempt > Math.max(card.w, card.h);
+      if (trueHiRes) {
+        if (!await ensureReady()) { setStatus("Could not load the model for the high-res still.", true); return; }
+        await dreamTiled(c, settings.lr, 2, (d, t) => { setStatus("Dreaming the still at " + c.width + "×" + c.height + "… tile " + d + "/" + t); setBar(d / t); });
+        setBar(null);
+      }
+      doneLong = attempt;
+      break;
+    } catch (e) {
+      console.error("still at " + attempt + " failed", e);
+      c = null;
+      if (attempt <= 3840) break;
+      setStatus("That size ran out of memory — trying 4K instead…");
+      await tf.nextFrame();
+    }
   }
-  const b = await toBlob(c, "image/png", 1);
-  downloadBlob(b, "dreamcamera-" + String(card.no).padStart(4, "0") + ".png");
-  setStatus("Still saved (" + c.width + "×" + c.height + (trueHiRes ? ", dreamed at full size" : "") + ").");
+  if (im && im.close) im.close();
+  if (!c || !doneLong) { setStatus("Still export failed (out of memory). Try a smaller export size.", true); return; }
+  // 8K saves as JPEG, not PNG: a PNG at 8K is 50–100MB and its encode
+  // plus the save held hundreds of MB at once. JPEG at 0.95 is visually
+  // near-lossless on a deepdream and a fifth the size.
+  const is8k = doneLong >= 7680;
+  const b = await toBlob(c, is8k ? "image/jpeg" : "image/png", is8k ? 0.95 : 1);
+  await downloadBlob(b, "dreamcamera-" + String(card.no).padStart(4, "0") + (is8k ? ".jpg" : ".png"));
+  setStatus("Still saved (" + c.width + "×" + c.height + (doneLong > Math.max(card.w, card.h) ? ", dreamed at full size" : "") + (doneLong < wantLong ? " — 8K ran out of memory, saved at 4K" : "") + ").");
 }
-function downloadBlob(blob, name) {
+async function downloadBlob(blob, name) {
   // In the app the WebView ignores the download attribute, so hand the
   // file to the app to save into Downloads. In a browser, download it.
   if (window.DreamCameraBridge && window.DreamCameraBridge.saveFile) {
-    const r = new FileReader();
-    r.onload = () => { try { window.DreamCameraBridge.saveFile(r.result, name, blob.type || "application/octet-stream"); } catch (e) { downloadBlobWeb(blob, name); } };
-    r.onerror = () => downloadBlobWeb(blob, name);
-    r.readAsDataURL(blob);
+    // Large files go in 5MB chunks: the old single-shot save turned the
+    // whole file into one base64 data URL, so the blob + the base64
+    // string + the decoded bytes were all in memory at once — that is
+    // what crashed the app on 8K stills and big videos. Chunked, only
+    // one 5MB piece is ever held at a time. (An older app without the
+    // chunk methods falls back to the single-shot save.)
+    const CHUNK = 5 * 1024 * 1024;
+    if (window.DreamCameraBridge.saveFileChunk && blob.size > CHUNK) {
+      try {
+        window.DreamCameraBridge.saveFileStart(name, blob.type || "application/octet-stream");
+        for (let off = 0; off < blob.size; off += CHUNK) {
+          const part = blob.slice(off, Math.min(blob.size, off + CHUNK));
+          const b64 = await new Promise((res, rej) => {
+            const r = new FileReader();
+            r.onload = () => res(String(r.result).split(",")[1] || "");
+            r.onerror = () => rej(new Error("read failed"));
+            r.readAsDataURL(part);
+          });
+          window.DreamCameraBridge.saveFileChunk(b64);
+          await sleep(30);   // let the app write this chunk before the next
+        }
+        window.DreamCameraBridge.saveFileEnd();
+        return;
+      } catch (e) {
+        console.error(e);
+        try { window.DreamCameraBridge.saveFileEnd(); } catch (err) {}
+        // fall through to the single-shot save
+      }
+    }
+    // Single-shot save (small files, or an older app without chunking).
+    await new Promise(res => {
+      const r = new FileReader();
+      r.onload = () => { try { window.DreamCameraBridge.saveFile(r.result, name, blob.type || "application/octet-stream"); } catch (e) { downloadBlobWeb(blob, name); } res(); };
+      r.onerror = () => { downloadBlobWeb(blob, name); res(); };
+      r.readAsDataURL(blob);
+    });
     return;
   }
   downloadBlobWeb(blob, name);
