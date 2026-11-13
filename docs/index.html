@@ -10,11 +10,11 @@
   html,body{height:100%}
   body{margin:0;background:#070213;color:#efeaff;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column;overflow:hidden;
     background-image:radial-gradient(600px 300px at 15% -5%,rgba(255,47,214,.22),transparent 70%),radial-gradient(600px 300px at 90% 110%,rgba(0,229,255,.18),transparent 70%)}
-  header{padding:10px 14px 4px;display:flex;justify-content:space-between;align-items:baseline;flex-shrink:0}
+  header{padding:calc(10px + env(safe-area-inset-top, 0px)) 14px 4px;display:flex;justify-content:space-between;align-items:baseline;flex-shrink:0}
   header h1{font-size:18px;margin:0;letter-spacing:.5px;color:#ff2fd6;text-shadow:0 0 12px rgba(255,47,214,.7),0 0 30px rgba(0,229,255,.35);display:flex;align-items:center;gap:8px}
   header h1 img{width:30px;height:30px;border-radius:8px}
   header span{font-size:12px;opacity:.7;color:#7df9ff}
-  main{max-width:560px;width:100%;margin:0 auto;padding:0 10px;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+  main{max-width:560px;width:100%;margin:0 auto;padding:0 10px env(safe-area-inset-bottom, 0px);flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
   .square{position:relative;width:100%;aspect-ratio:1/1;background:#000;border-radius:14px;overflow:hidden;border:1px solid rgba(255,47,214,.55);box-shadow:0 0 22px rgba(255,47,214,.30),0 0 44px rgba(0,229,255,.12);flex-shrink:0;touch-action:none}
   .square video,.square canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
   .square canvas{display:none}
@@ -36,6 +36,7 @@
   .layers input{display:none}
   .layers label.on{background:linear-gradient(135deg,#ff2fd6,#7b2fff);border-color:#ff2fd6;color:#fff;box-shadow:0 0 12px rgba(255,47,214,.5)}
   .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .row.actions button{flex:1;white-space:nowrap}
   button{position:relative;overflow:hidden;background:#6a4fd0;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-size:15px;cursor:pointer}
   button::after{content:"";position:absolute;inset:0;background:linear-gradient(115deg,transparent 35%,rgba(255,255,255,.13) 46%,rgba(0,229,255,.15) 50%,rgba(255,47,214,.15) 54%,transparent 65%);background-size:250% 100%;animation:holo 7s linear infinite;pointer-events:none}
   @keyframes holo{from{background-position:200% 0}to{background-position:-100% 0}}
@@ -59,7 +60,7 @@
   #cameraTab,#videoTab{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
   #cameraTab[hidden],#videoTab[hidden]{display:none}
   #videoStatus{font-size:13px;min-height:18px;margin-top:10px;color:#7df9ff}
-  #videoBox video{object-fit:contain}
+  #videoBox video,#videoBox canvas{object-fit:contain}
   #estimate{font-size:12px;opacity:.7;margin-top:4px}
   #scrollArea{flex:1;min-height:0;overflow-y:auto;padding-bottom:40px;-webkit-overflow-scrolling:touch}
   #gallery{margin-top:14px}
@@ -75,7 +76,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.19</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.20</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">📷 Camera</button>
@@ -144,16 +145,16 @@
         <select id="facing"><option value="environment">Back</option><option value="user">Front</option></select></label>
       <label><b>Model source</b>
         <select id="modelSrc"><option value="live">Live site (online)</option><option value="local">Local models/ folder</option></select></label>
-      <label><b>Engine — tap to switch</b><button class="ghost" id="engineBtn" style="width:100%;text-align:left;padding:6px 10px;font-size:14px">—</button></label>
+      <label><b>Engine — tap to switch</b><button class="ghost" id="engineBtn" style="width:100%;text-align:left;padding:6px 10px;font-size:14px">Auto · tap to switch</button></label>
     </div>
-    <div class="row">
+    <div class="row actions">
       <button class="ghost" id="continueBtn" disabled>Continue +50</button>
       <button class="ghost" id="videoBtn" disabled>Save video</button>
       <button class="ghost" id="stillBtn" disabled>Save still</button>
       <button class="ghost" id="keepBtn" disabled>Keep in gallery</button>
     </div>
     <div class="row">
-      <button class="ghost" id="uploadBtn">Upload a photo instead</button>
+      <button class="ghost" id="uploadBtn" style="flex:1">Upload a photo instead</button>
       <input type="file" id="fileIn" accept="image/*" hidden>
     </div>
   </section>
@@ -169,6 +170,7 @@
   <div id="videoTab" hidden>
     <div class="square" id="videoBox">
       <video id="vidOut" controls playsinline></video>
+      <canvas id="vidPrev" style="display:none"></canvas>
       <div class="hint" id="videoHint">Dreamed video plays here</div>
     </div>
     <div id="videoScroll" style="flex:1;min-height:0;overflow-y:auto;padding-bottom:40px;-webkit-overflow-scrolling:touch">
@@ -195,6 +197,7 @@
             <option value="weavelight">Weave Light — gentle living style</option>
             <option value="transferdeep">Transfer Deep — heavy photo overlay</option>
             <option value="hyperweave">Hyper Weave — maximum everything</option>
+            <option value="acidweave">Acid Weave — maximum trip, style dreams hard</option>
           </select>
           <span class="val">Uses the model, layers and settings from the Camera tab.</span>
         </label>
@@ -213,12 +216,12 @@
         </label>
         <label><b>Process fps</b>
           <select id="videoFps"><option value="8">8 fps</option><option value="12" selected>12 fps</option><option value="16">16 fps</option></select></label>
-        <label><b>Steps / frame <span class="val" id="videoStepsVal">2</span></b>
-          <input type="range" id="videoSteps" min="1" max="4" step="1" value="2"></label>
-        <label id="mixRow"><b>Style mix <span class="val" id="videoMixVal">0.50</span></b>
-          <input type="range" id="videoMix" min="0" max="1" step="0.05" value="0.5"></label>
-        <label id="weaveRow"><b>Weave <span class="val" id="videoWeaveVal">0.30</span></b>
-          <input type="range" id="videoWeave" min="0" max="0.6" step="0.05" value="0.3"></label>
+        <label><b>Steps / frame <span class="val" id="videoStepsVal">3</span></b>
+          <input type="range" id="videoSteps" min="1" max="5" step="1" value="3"></label>
+        <label id="mixRow"><b>Style mix <span class="val" id="videoMixVal">0.70</span></b>
+          <input type="range" id="videoMix" min="0" max="1" step="0.05" value="0.7"></label>
+        <label id="weaveRow"><b>Weave <span class="val" id="videoWeaveVal">0.50</span></b>
+          <input type="range" id="videoWeave" min="0" max="0.75" step="0.05" value="0.5"></label>
         <label class="full"><b>Zoom in while dreaming</b>
           <select id="videoZoom"><option value="1" selected>On · the video slowly zooms as it dreams</option><option value="0">Off · framing stays put</option></select></label>
       </div>
