@@ -683,6 +683,11 @@ function videoMime() { if (!window.MediaRecorder) return null; const m = ["video
 async function exportVideo() {
   if (!card || busy || zooming || !card.frames.length) return;
   busy = true; updateUI();
+  // Stop the playback loop first: it draws to the same viewfinder the
+  // export draws to, so leaving it running makes the picture flicker
+  // between the two — the glitchy export. It resumes at the end, so what
+  // you watch while it records is the export itself, frame by frame.
+  stopPlaying();
   try {
     const mime = videoMime(), L = seqLength(), fpsIn = cardFps(), fpsOut = cardFpsOut();
     // Record the dream area as it plays (zoom in, then back out) and spit
@@ -725,7 +730,7 @@ async function exportVideo() {
     downloadBlob(blob, "dreamcamera-" + String(card.no).padStart(4, "0") + "." + ext);
     setStatus("Video saved (" + (blob.size / 1048576).toFixed(1) + " MB). Also keep it in the gallery to watch later.");
   } catch (e) { console.error(e); setStatus("Video export failed: " + (e && e.message || e), true); }
-  setBar(null); busy = false; updateUI();
+  setBar(null); busy = false; startPlaying(); updateUI();
 }
 async function exportStill() {
   if (!card || !card.frames.length) return;
@@ -1009,13 +1014,14 @@ function switchTab(name) {
 // Video presets: one tap sets mode, steps, mix, weave and zoom together.
 const VIDEO_PRESETS = {
   gentle: { mode: "frame", steps: 1, mix: 0, weave: 0.15, zoom: false },
-  dreamweave: { mode: "dreamweave", steps: 2, mix: 0.5, weave: 0.3, zoom: true },
-  inception: { mode: "dreamweave", steps: 4, mix: 0.7, weave: 0.5, zoom: true },
+  dreamweave: { mode: "dreamweave", steps: 3, mix: 0.7, weave: 0.5, zoom: true },
+  inception: { mode: "dreamweave", steps: 5, mix: 0.8, weave: 0.6, zoom: true },
   transfer: { mode: "transfer", steps: 2, mix: 0.6, weave: 0.15, zoom: false },
   slowburn: { mode: "frame", steps: 3, mix: 0, weave: 0.2, zoom: true },
   weavelight: { mode: "dreamweave", steps: 1, mix: 0.3, weave: 0.2, zoom: false },
   transferdeep: { mode: "transfer", steps: 4, mix: 0.8, weave: 0.15, zoom: true },
-  hyperweave: { mode: "dreamweave", steps: 4, mix: 0.85, weave: 0.6, zoom: true }
+  hyperweave: { mode: "dreamweave", steps: 5, mix: 0.9, weave: 0.7, zoom: true },
+  acidweave: { mode: "dreamweave", steps: 5, mix: 0.95, weave: 0.75, zoom: true }
 };
 function applyVideoPreset(name) {
   const p = VIDEO_PRESETS[name]; if (!p) return;
@@ -1056,11 +1062,21 @@ async function makeStyleTexture(w, h) {
   t = dreamSteps(t, settings.lr, 8, false);
   return t;
 }
+// Seek with a timeout: a seek that never lands (thin buffer, odd codec,
+// WebView quirk) used to hang the whole run with no message at all.
 function seekTo(v, t) {
-  return new Promise(res => { v.onseeked = () => res(); v.currentTime = t; });
+  return new Promise(res => {
+    let done = false;
+    const finish = ok => { if (!done) { done = true; res(ok); } };
+    v.onseeked = () => finish(true);
+    v.onerror = () => finish(false);
+    try { v.currentTime = t; } catch (e) { finish(false); return; }
+    setTimeout(() => finish(false), 8000);
+  });
 }
 async function processVideo() {
-  if (videoRunning || !videoMeta) return;
+  if (videoRunning) return;
+  if (!videoMeta) { setVideoStatus("Pick a video first — it takes a second to read.", true); return; }
   const mode = $("videoMode").value;
   if (mode !== "frame" && !styleImg) { setVideoStatus("Pick a style photo first.", true); return; }
   if (!await ensureReady()) return;
@@ -1069,6 +1085,16 @@ async function processVideo() {
   src.muted = true; src.playsInline = true; src.preload = "auto"; src.src = videoSrc;
   try { await new Promise((res, rej) => { src.onloadedmetadata = res; src.onerror = () => rej(new Error("could not read that video")); }); }
   catch (e) { setVideoStatus("Could not read that video.", true); videoRunning = false; updateVideoUI(); return; }
+  // Prime the video so seeks have data to land on: wait for the first
+  // frame to be readable (bounded — a video that never primes is reported,
+  // not hung on). Without this the first seek could stall forever.
+  await new Promise(res => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; res(); } };
+    src.oncanplay = finish; src.onloadeddata = finish; src.onerror = finish;
+    try { src.load(); } catch (e) { finish(); }
+    setTimeout(finish, 8000);
+  });
   const dur = Math.min(15, src.duration || 0);
   const fps = parseInt($("videoFps").value, 10) || 12;
   const total = Math.max(1, Math.floor(dur * fps));
@@ -1088,14 +1114,30 @@ async function processVideo() {
   const manualFrames = !!(vtrack && typeof vtrack.requestFrame === "function");
   const stream = manualFrames ? probeStream : outCv.captureStream(fps);
   const mime = videoMime();
-  const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8000000 } : { videoBitsPerSecond: 8000000 });
-  const chunks = []; rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-  const done = new Promise(r => rec.onstop = r);
-  rec.start(200);
+  // The recorder must not wedge the run: if it cannot start, say so and
+  // give the button back instead of leaving Dream disabled forever.
+  let rec, done;
+  const chunks = [];
+  try {
+    rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8000000 } : { videoBitsPerSecond: 8000000 });
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    done = new Promise(r => rec.onstop = r);
+    rec.start(200);
+  } catch (e) {
+    setVideoStatus("Could not start the video recorder on this device: " + (e && e.message || e), true);
+    videoRunning = false; updateVideoUI(); return;
+  }
+  // Live preview: show each dreamed frame in the square as it is made, so
+  // you watch the video build smoothly while it records. The finished
+  // video takes over the square at the end.
+  const pv = $("vidPrev"); pv.width = vd.w; pv.height = vd.h; pv.style.display = "block";
+  $("vidOut").style.display = "none";
+  $("videoHint").textContent = "Dreaming… watch it build here.";
   let prev = null;
   try {
     for (let i = 0; i < total && videoRunning; i++) {
-      await seekTo(src, Math.min(i / fps, Math.max(0, dur - 0.001)));
+      const seeked = await seekTo(src, Math.min(i / fps, Math.max(0, dur - 0.001)));
+      if (!seeked) { setVideoStatus("That video stopped seeking at frame " + (i + 1) + " — try a different file.", true); break; }
       inCv.getContext("2d").drawImage(src, 0, 0, vd.w, vd.h);
       let cur = canvasToTensor(inCv);
       if (mode === "dreamweave" && prev) {
@@ -1104,11 +1146,11 @@ async function processVideo() {
         cur.dispose(); cur = w;
       }
       if (mode !== "frame" && styleT) {
-        if (mode === "dreamweave" && i % 6 === 0) {   // the style itself dreams, twice a second
+        if (mode === "dreamweave" && i % 3 === 0) {   // the style itself dreams, four times a second — it visibly morphs as the video plays
           // The style zooms in and dreams along with the video — extra
           // inception: the overlay is a living dream, not a static picture.
-          const zs = zoomCrop(styleT, 0.99, 0, 0, 0); styleT.dispose(); styleT = zs;
-          styleT = dreamSteps(styleT, settings.lr, 2, false);
+          const zs = zoomCrop(styleT, 0.985, 0, 0, 0); styleT.dispose(); styleT = zs;
+          styleT = dreamSteps(styleT, settings.lr, 3, false);
         }
         const mix = parseFloat($("videoMix").value) || 0.5;
         const b = tf.tidy(() => cur.mul(1 - mix).add(styleT.mul(mix)));
@@ -1120,6 +1162,7 @@ async function processVideo() {
       const steps = parseInt($("videoSteps").value, 10) || 2;
       cur = dreamSteps(cur, settings.lr, steps, true);
       await tensorToCanvas(cur, outCv);
+      pv.getContext("2d").drawImage(outCv, 0, 0);   // live preview: the new frame, in order
       if (prev) prev.dispose();
       prev = cur;
       setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total);
@@ -1132,16 +1175,22 @@ async function processVideo() {
     console.error(e);
     setVideoStatus("Video dream failed: " + (e && e.message || e), true);
   }
-  rec.stop(); await done;
+  try { rec.stop(); await done; } catch (e) { console.error(e); }
   if (prev) { prev.dispose(); prev = null; }
   if (styleT) { styleT.dispose(); styleT = null; }
   videoRunning = false;
   videoOutBlob = new Blob(chunks, { type: mime || "video/webm" });
-  if (videoOutUrl) URL.revokeObjectURL(videoOutUrl);
-  videoOutUrl = URL.createObjectURL(videoOutBlob);
-  $("vidOut").src = videoOutUrl;
-  $("videoHint").textContent = "";
-  if (videoOutBlob.size) setVideoStatus("Done — " + total + " frames. Watch it above, or save it.");
+  pv.style.display = "none"; $("vidOut").style.display = "";
+  if (videoOutBlob.size) {
+    if (videoOutUrl) URL.revokeObjectURL(videoOutUrl);
+    videoOutUrl = URL.createObjectURL(videoOutBlob);
+    $("vidOut").src = videoOutUrl;
+    $("videoHint").textContent = "";
+    setVideoStatus("Done — " + total + " frames. Watch it above, or save it.");
+  } else {
+    videoOutBlob = null;
+    $("videoHint").textContent = "Dreamed video plays here";
+  }
   setVideoBar(null);
   updateVideoUI();
 }
