@@ -1442,6 +1442,78 @@ async function renderGallery() {
   }
 }
 
+// ===== TRIM FRAMES =====
+// Remove a section of the open dream — any number of frames. Pick a
+// frame range (1-based, as shown while it plays) and either remove just
+// that range, or keep only that range and drop the rest. At least one
+// frame must remain. If the trim cuts the end off, the stored depth is
+// re-estimated from the frames left, so a later Continue resumes at the
+// right depth. If the dream is already in the gallery, the saved copy is
+// updated too.
+function trimRange() {
+  const total = card && card.frames.length || 0;
+  if (!total) return null;
+  let from = Math.floor(parseFloat($("trimFrom").value) || 0);
+  let to = Math.floor(parseFloat($("trimTo").value) || 0);
+  from = Math.max(1, Math.min(total, from));
+  to = Math.max(1, Math.min(total, to));
+  return { from, to, total };
+}
+function trimUpdate() {
+  const total = card && card.frames.length || 0;
+  const has = total > 0;
+  $("trimFrom").max = total; $("trimTo").max = total;
+  $("trimTotal").textContent = has ? "of " + total + " frames" : "";
+  const r = trimRange();
+  let msg = "", ok = false;
+  if (!has) { msg = "No dream open yet."; }
+  else if (!r || r.from > r.to) { msg = "Pick a range — From must be at or before To."; }
+  else {
+    const n = r.to - r.from + 1;
+    if (n >= total) { msg = "That would remove every frame — keep at least one."; }
+    else {
+      ok = true;
+      msg = "Removes frames " + r.from + "–" + r.to + " (" + n + " frame" + (n === 1 ? "" : "s") + "). " + (total - n) + " left.";
+    }
+  }
+  $("trimPreview").textContent = msg;
+  const dis = !has || !ok || busy || zooming;
+  $("trimRemoveBtn").disabled = dis;
+  $("trimKeepBtn").disabled = dis;
+  return r;
+}
+async function trimApply(mode) {
+  if (!card || busy || zooming) return;
+  const r = trimUpdate();
+  if (!r || r.from > r.to) return;
+  const total = r.total, n = r.to - r.from + 1;
+  if (n >= total) { setStatus("That would remove every frame — keep at least one.", true); return; }
+  stopPlaying();
+  const cutEnd = (r.to >= total);   // the trim takes the last frame off
+  if (mode === "remove") {
+    card.frames.splice(r.from - 1, n);
+    setStatus("Removed frames " + r.from + "–" + r.to + " (" + n + "). " + card.frames.length + " frames left.");
+  } else {
+    card.frames = card.frames.slice(r.from - 1, r.to);
+    setStatus("Kept frames " + r.from + "–" + r.to + " (" + n + "). " + card.frames.length + " frames left.");
+  }
+  if (cutEnd) card.viewDepth = Math.min(ZOOM_MAX, 1 + card.frames.length * 0.12);   // re-estimate the depth from the frames left
+  card.pathFrame = Math.min(card.pathFrame || 0, card.frames.length - 1);
+  // Keep the range boxes in range now that the total changed.
+  $("trimFrom").value = Math.max(1, Math.min(card.frames.length, r.from));
+  $("trimTo").value = Math.max(1, Math.min(card.frames.length, r.to));
+  // If this dream is already in the gallery, update the saved copy too.
+  try {
+    const ex = await idbDo("readonly", st => st.get(card.id));
+    if (ex) {
+      const rec = { id: card.id, created: card.created, no: card.no, name: card.name, model: card.model, preset: card.preset, w: card.w, h: card.h, frames: card.frames.slice(), thumb: card.frames[0], zoomTotal: card.zoomTotal, viewDepth: card.viewDepth, settings: card.settings };
+      await idbDo("readwrite", st => st.put(rec));
+      renderGallery();
+    }
+  } catch (e) { console.error(e); }
+  startPlaying(); updateUI(); trimUpdate();
+}
+
 // ===== UI =====
 // Reset: stop everything, drop the dream, back to the live camera
 // with the default settings.
@@ -1471,6 +1543,7 @@ function updateUI() {
   $("stillBtn").disabled = !card || !card.frames.length || busy || zooming;
   $("keepBtn").disabled = !card || !card.frames.length || busy || zooming;
   $("modelNote").textContent = MODEL.note || "";
+  trimUpdate();
 }
 function bindRange(id, key, fmt, after) {
   const el = $(id);
@@ -1615,6 +1688,10 @@ function initControls() {
   $("videoBtn").onclick = exportVideo;
   $("stillBtn").onclick = exportStill;
   $("keepBtn").onclick = keepInGallery;
+  $("trimFrom").addEventListener("input", trimUpdate);
+  $("trimTo").addEventListener("input", trimUpdate);
+  $("trimRemoveBtn").onclick = () => trimApply("remove");
+  $("trimKeepBtn").onclick = () => trimApply("keep");
   $("uploadBtn").onclick = () => $("fileIn").click();
   $("fileIn").addEventListener("change", async () => {
     const f = $("fileIn").files[0]; if (!f) return;
