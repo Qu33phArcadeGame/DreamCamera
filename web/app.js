@@ -187,7 +187,7 @@ const PRESETS = [
   { m: "zentangledream", name: "Zentangle weave", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["block_10_project_BN", "block_13_project_BN"] } },
   { m: "zentangledream", name: "Zentangle bloom", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["block_16_project_BN"] } },
 ];
-const DEFAULTS = { model: "v1", preset: 0, path: "random", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live", exportSize: "1080p", hueSpin: 0, saturation: 1, pulse: 0, drawnPath: [], glow: 0, soft: 0, vignette: 0, fade: 0, rgbSplit: 0, sliceShift: 0, staticAmt: 0, pixelate: 0, invertAmt: 0 };
+const DEFAULTS = { model: "v1", preset: 0, path: "random", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live", exportSize: "1080p", hueSpin: 0, saturation: 1, pulse: 0, drawnPath: [], glow: 0, soft: 0, vignette: 0, fade: 0, rgbSplit: 0, staticAmt: 0, invertAmt: 0, kaleido: 0, swirl: 0, echo: 0, scanlines: 0 };
 
 // ===== STATE =====
 const vid = $("vid"), artCv = $("artCv");
@@ -645,11 +645,12 @@ function noteStepTime(ms) { msPerStep = msPerStep == null ? ms : msPerStep * 0.8
 // in place. It bakes into the saved video/still. The filter effects (hue,
 // saturation, invert, soft blur, fade) combine into ONE canvas filter +
 // one draw, so they cost almost nothing. The composite effects (RGB split,
-// slice, glow, vignette, static, pixelate) each take a few draws. If
-// nothing is on, it returns immediately (no overhead). A missing canvas
-// filter is a silent no-op, so this never crashes an old WebView.
+// glow, vignette, static, kaleidoscope, swirl, echo, scanlines) each take
+// a few draws. If nothing is on, it returns immediately (no overhead). A
+// missing canvas filter is a silent no-op, so this never crashes an old
+// WebView.
 const fxCv = document.createElement("canvas");   // temp 1
-const fxCv2 = document.createElement("canvas");  // temp 2 (RGB split channels)
+const fxCv2 = document.createElement("canvas");  // temp 2 (RGB split channels / kaleidoscope)
 let noiseCv = null;   // pre-generated static noise, tiled
 function getNoiseCv() {
   if (noiseCv) return noiseCv;
@@ -663,26 +664,75 @@ function getNoiseCv() {
   ctx.putImageData(img, 0, 0);
   return noiseCv;
 }
+let scanCv = null;   // pre-generated scanline pattern (1px dark line every 4px), tiled
+function getScanCv() {
+  if (scanCv) return scanCv;
+  scanCv = document.createElement("canvas"); scanCv.width = 4; scanCv.height = 4;
+  const ctx = scanCv.getContext("2d");
+  ctx.clearRect(0, 0, 4, 4);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, 4, 1);
+  return scanCv;
+}
 function applyFx(cv, fx) {
   if (!fx) return;
   const W = cv.width, H = cv.height;
   if (W <= 0 || H <= 0) return;
   const ctx = cv.getContext("2d");
-  const on = (fx.hue || (fx.sat && fx.sat !== 1) || fx.invert || fx.soft || fx.fade || fx.glow || fx.vignette || fx.rgb || fx.slice || fx.static || fx.pixel);
+  const on = (fx.hue || (fx.sat && fx.sat !== 1) || fx.invert || fx.soft || fx.fade || fx.glow || fx.vignette || fx.rgb || fx.static || fx.kaleido || fx.swirl || fx.echo || fx.scanlines);
   if (!on) return;
-  // 1. Pixelate first (it changes the resolution; the rest applies to the blocky image).
-  if (fx.pixel > 0) {
-    const bw = Math.max(1, Math.round(W / fx.pixel)), bh = Math.max(1, Math.round(H / fx.pixel));
-    if (fxCv.width !== bw || fxCv.height !== bh) { fxCv.width = bw; fxCv.height = bh; }
-    const fctx = fxCv.getContext("2d");
-    fctx.imageSmoothingEnabled = true;
-    fctx.drawImage(cv, 0, 0, bw, bh);
-    ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0, 0, W, H);
-    ctx.drawImage(fxCv, 0, 0, W, H);
-    ctx.imageSmoothingEnabled = true;
+  // 1. Kaleidoscope: mirror one quadrant into all four (a symmetric mandala).
+  // Blends with the original by the slider, so 0.5 is half mirrored.
+  if (fx.kaleido > 0) {
+    if (fxCv.width !== W || fxCv.height !== H) { fxCv.width = W; fxCv.height = H; }
+    if (fxCv2.width !== W || fxCv2.height !== H) { fxCv2.width = W; fxCv2.height = H; }
+    const fctx = fxCv.getContext("2d"), gctx = fxCv2.getContext("2d");
+    fctx.clearRect(0, 0, W, H); fctx.drawImage(cv, 0, 0);   // fxCv = source
+    const hw = W / 2, hh = H / 2;
+    gctx.clearRect(0, 0, W, H);
+    gctx.drawImage(fxCv, 0, 0, hw, hh, 0, 0, hw, hh);   // top-left, as-is
+    gctx.save(); gctx.translate(W, 0); gctx.scale(-1, 1); gctx.drawImage(fxCv, 0, 0, hw, hh, 0, 0, hw, hh); gctx.restore();   // top-right, mirrored
+    gctx.save(); gctx.translate(0, H); gctx.scale(1, -1); gctx.drawImage(fxCv, 0, 0, hw, hh, 0, 0, hw, hh); gctx.restore();   // bottom-left, mirrored
+    gctx.save(); gctx.translate(W, H); gctx.scale(-1, -1); gctx.drawImage(fxCv, 0, 0, hw, hh, 0, 0, hw, hh); gctx.restore();   // bottom-right, mirrored both
+    ctx.globalAlpha = fx.kaleido;
+    ctx.drawImage(fxCv2, 0, 0);
+    ctx.globalAlpha = 1;
   }
-  // 2. Filter effects in one pass: hue, saturation, invert, soft blur, fade.
+  // 2. Swirl: twist the image around the centre like a vortex. The outer
+  // rings twist most, the centre least. The vortex lives in a disc
+  // (0.75x the short side) so the corners keep the original image — a
+  // full-canvas disc would need a huge zoom to cover a tall frame.
+  if (fx.swirl > 0) {
+    if (fxCv.width !== W || fxCv.height !== H) { fxCv.width = W; fxCv.height = H; }
+    const fctx = fxCv.getContext("2d");
+    fctx.clearRect(0, 0, W, H); fctx.drawImage(cv, 0, 0);   // fxCv = source (cv keeps the base at the edges)
+    const cx = W / 2, cy = H / 2, maxR = Math.min(W, H) * 0.75;
+    const rings = 6, S = 1 + 0.4 * fx.swirl;
+    for (let i = 0; i < rings; i++) {
+      const rOut = maxR * (1 - i / rings);
+      const ang = fx.swirl * (1 - i / rings) * 0.6;   // outer rings twist most
+      ctx.save();
+      ctx.beginPath(); ctx.arc(cx, cy, rOut, 0, Math.PI * 2); ctx.clip();
+      ctx.translate(cx, cy); ctx.rotate(ang); ctx.scale(S, S); ctx.translate(-cx, -cy);
+      ctx.drawImage(fxCv, 0, 0);
+      ctx.restore();
+    }
+  }
+  // 3. Echo: the image trails into itself, a tunnel of echoes.
+  if (fx.echo > 0) {
+    if (fxCv.width !== W || fxCv.height !== H) { fxCv.width = W; fxCv.height = H; }
+    const fctx = fxCv.getContext("2d");
+    fctx.clearRect(0, 0, W, H); fctx.drawImage(cv, 0, 0);   // fxCv = source
+    for (let i = 1; i <= 3; i++) {
+      const s = 1 + i * 0.05 * fx.echo;
+      const a = 0.22 * fx.echo / i;
+      const dw = W * s, dh = H * s;
+      ctx.globalAlpha = a;
+      ctx.drawImage(fxCv, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    }
+    ctx.globalAlpha = 1;
+  }
+  // 4. Filter effects in one pass: hue, saturation, invert, soft blur, fade.
   const parts = [];
   if (fx.hue) parts.push("hue-rotate(" + fx.hue + "deg)");
   if (fx.sat && fx.sat !== 1) parts.push("saturate(" + fx.sat + ")");
@@ -698,7 +748,7 @@ function applyFx(cv, fx) {
     ctx.clearRect(0, 0, W, H);
     ctx.drawImage(fxCv, 0, 0);
   }
-  // 3. RGB split: the red channel shifts one way, blue the other.
+  // 5. RGB split: the red channel shifts one way, blue the other.
   if (fx.rgb > 0) {
     const k = Math.round(fx.rgb);
     if (fxCv.width !== W || fxCv.height !== H) { fxCv.width = W; fxCv.height = H; }
@@ -719,20 +769,7 @@ function applyFx(cv, fx) {
     }
     ctx.globalCompositeOperation = "source-over";
   }
-  // 4. Slice shift: a few horizontal bands slide sideways (glitch).
-  if (fx.slice > 0) {
-    if (fxCv.width !== W || fxCv.height !== H) { fxCv.width = W; fxCv.height = H; }
-    const fctx = fxCv.getContext("2d");
-    fctx.clearRect(0, 0, W, H); fctx.drawImage(cv, 0, 0);   // fxCv = source
-    const n = 2 + Math.round(fx.slice * 6);   // 2–8 bands
-    for (let i = 0; i < n; i++) {
-      const y = Math.floor(Math.random() * H);
-      const h = Math.max(4, Math.floor(H * (0.02 + Math.random() * 0.08)));
-      const dx = Math.round((Math.random() * 2 - 1) * fx.slice * W * 0.08);
-      ctx.drawImage(fxCv, 0, y, W, h, dx, y, W, h);
-    }
-  }
-  // 5. Glow: a blurred bright copy screened over the top (bloom / haze).
+  // 6. Glow: a blurred bright copy screened over the top (bloom / haze).
   if (fx.glow > 0) {
     if (fxCv.width !== W || fxCv.height !== H) { fxCv.width = W; fxCv.height = H; }
     const fctx = fxCv.getContext("2d");
@@ -745,7 +782,8 @@ function applyFx(cv, fx) {
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = "source-over";
   }
-  // 6. Vignette: darken the edges.
+  // 7. Vignette: darken the edges. Only ever drawn when the slider is
+  // above 0 — at 0 it is skipped entirely, so it cannot appear on its own.
   if (fx.vignette > 0) {
     const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
     g.addColorStop(0, "rgba(0,0,0,0)");
@@ -753,7 +791,16 @@ function applyFx(cv, fx) {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
   }
-  // 7. Static: film grain (a tiled noise canvas at a random offset).
+  // 8. Scanlines: CRT horizontal lines (glitch).
+  if (fx.scanlines > 0) {
+    const sc = getScanCv();
+    ctx.save();
+    ctx.globalAlpha = fx.scanlines * 0.5;
+    ctx.fillStyle = ctx.createPattern(sc, "repeat");
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+  // 9. Static: film grain (a tiled noise canvas at a random offset).
   if (fx.static > 0) {
     const nc = getNoiseCv();
     const ox = Math.floor(Math.random() * 512), oy = Math.floor(Math.random() * 512);
@@ -770,9 +817,11 @@ function cameraFx(hue) {
     hue: hue || 0, sat: settings.saturation || 1,
     glow: settings.glow || 0, soft: settings.soft || 0,
     vignette: settings.vignette || 0, fade: settings.fade || 0,
-    rgb: settings.rgbSplit || 0, slice: settings.sliceShift || 0,
-    static: settings.staticAmt || 0, pixel: settings.pixelate || 0,
-    invert: settings.invertAmt || 0
+    rgb: settings.rgbSplit || 0,
+    static: settings.staticAmt || 0,
+    invert: settings.invertAmt || 0,
+    kaleido: settings.kaleido || 0, swirl: settings.swirl || 0,
+    echo: settings.echo || 0, scanlines: settings.scanlines || 0
   };
 }
 // Build the fx object for the Video (hue is the video's cumulative spin).
@@ -782,9 +831,11 @@ function videoFx(hue) {
     hue: hue || 0, sat: v("videoSaturation") || 1,
     glow: v("videoGlow"), soft: v("videoSoft"),
     vignette: v("videoVignette"), fade: v("videoFade"),
-    rgb: v("videoRgbSplit"), slice: v("videoSlice"),
-    static: v("videoStatic"), pixel: v("videoPixelate"),
-    invert: v("videoInvert")
+    rgb: v("videoRgbSplit"),
+    static: v("videoStatic"),
+    invert: v("videoInvert"),
+    kaleido: v("videoKaleido"), swirl: v("videoSwirl"),
+    echo: v("videoEcho"), scanlines: v("videoScanlines")
   };
 }
 function updateEstimate() {
@@ -876,7 +927,7 @@ async function ensureCur() {
 // only advances once the previous frame has landed, so frames can't
 // overtake each other.
 const ZOOM_CAP = 3;   // kept for loading old saves (zoomTotal); the zoom itself no longer caps
-const ZOOM_MAX = 16;  // total magnification vs the seed: the zoom eases to a stop here
+const ZOOM_MAX = 64;  // total magnification vs the seed. It used to ease to a stop at 16x, so after ~100–150 frames the zoom looked frozen — now the cap is 64x and the ease never quite reaches zero, so a long dream keeps falling in (slowly) instead of stopping.
 let deep = null, deepZoom = 1, viewDepth = 1, driftX = 0, driftY = 0, lastViewDepth = 1;
 let hueTotal = 0;   // cumulative hue rotation for the Color spin effect; resets with a new dream
 let pathPhase = 0;   // where the zoom centre is along its path shape (0..1 = one full loop)
@@ -1084,8 +1135,12 @@ async function zoomRun() {
     while (zooming && made < want && card.frames.length < TOTAL_MAX) {
       try {
         const h = deep.shape[1], w = deep.shape[2];
-        // Ease the zoom to a stop as the true depth approaches the cap.
-        const ease = Math.max(0, 1 - viewDepth / ZOOM_MAX);
+        // Ease the zoom as the true depth approaches the cap — but never
+        // to a full stop. The old ease hit exactly 0 at 16x, so after
+        // ~100–150 frames the zoom looked frozen. Now the ease floors at
+        // 0.15, so even at the 64x cap the view keeps falling in at a
+        // gentle 0.45% per frame instead of stopping.
+        const ease = Math.max(0.15, 1 - viewDepth / ZOOM_MAX);
         const zf = 1 - (1 - settings.zoomFactor) * ease;
         // Dream strength settles with the zoom: as the view stops
         // magnifying, the dreaming eases to a gentle drift instead of
@@ -1471,7 +1526,7 @@ function applyPreset(i) {
   syncControls(); buildLayers(); saveSettings();
 }
 function syncControls() {
-  const map = { steps: "steps", lr: "lr", zoomFactor: "zoomFactor", range: "range", segFrames: "segFrames", frames: "frames", playFps: "playFps", playFpsOut: "playFpsOut", sharpen: "sharpen", octaves: "octaves", jitter: "jitter", hueSpin: "hueSpin", saturation: "saturation", pulse: "pulse", glow: "glow", soft: "soft", vignette: "vignette", fade: "fade", rgbSplit: "rgbSplit", sliceShift: "sliceShift", staticAmt: "staticAmt", pixelate: "pixelate", invertAmt: "invertAmt" };
+  const map = { steps: "steps", lr: "lr", zoomFactor: "zoomFactor", range: "range", segFrames: "segFrames", frames: "frames", playFps: "playFps", playFpsOut: "playFpsOut", sharpen: "sharpen", octaves: "octaves", jitter: "jitter", hueSpin: "hueSpin", saturation: "saturation", pulse: "pulse", glow: "glow", soft: "soft", vignette: "vignette", fade: "fade", rgbSplit: "rgbSplit", staticAmt: "staticAmt", invertAmt: "invertAmt", kaleido: "kaleido", swirl: "swirl", echo: "echo", scanlines: "scanlines" };
   for (const id of Object.keys(map)) { const el = $(id); el.value = settings[map[id]]; const v = $(id + "Val"); if (v) v.textContent = fmtVal(id, settings[map[id]]); }
   $("path").value = settings.path; $("quality").value = settings.quality; $("ratio").value = settings.ratio || "1:1";
   $("exportSize").value = settings.exportSize || "1080p";
@@ -1487,7 +1542,7 @@ function fmtVal(id, v) {
   if (id === "hueSpin") return (+v).toFixed(1);
   if (id === "saturation") return (+v).toFixed(2);
   if (id === "pulse") return (+v).toFixed(2);
-  if (id === "glow" || id === "vignette" || id === "fade" || id === "sliceShift" || id === "staticAmt" || id === "invertAmt") return (+v).toFixed(2);
+  if (id === "glow" || id === "vignette" || id === "fade" || id === "staticAmt" || id === "invertAmt" || id === "kaleido" || id === "swirl" || id === "echo" || id === "scanlines") return (+v).toFixed(2);
   if (id === "soft") return (+v).toFixed(2);
   return String(v);
 }
@@ -1511,10 +1566,12 @@ function initControls() {
   bindRange("vignette", "vignette", v => (+v).toFixed(2));
   bindRange("fade", "fade", v => (+v).toFixed(2));
   bindRange("rgbSplit", "rgbSplit", v => String(v));
-  bindRange("sliceShift", "sliceShift", v => (+v).toFixed(2));
   bindRange("staticAmt", "staticAmt", v => (+v).toFixed(2));
-  bindRange("pixelate", "pixelate", v => String(v));
   bindRange("invertAmt", "invertAmt", v => (+v).toFixed(2));
+  bindRange("kaleido", "kaleido", v => (+v).toFixed(2));
+  bindRange("swirl", "swirl", v => (+v).toFixed(2));
+  bindRange("echo", "echo", v => (+v).toFixed(2));
+  bindRange("scanlines", "scanlines", v => (+v).toFixed(2));
   drawPathInit();   // the draw-your-own-path box (restores a saved shape)
   $("path").value = settings.path;
   $("path").addEventListener("change", () => { settings.path = $("path").value; saveSettings(); });
@@ -1855,10 +1912,12 @@ function initVideoTab() {
   $("videoVignette").addEventListener("input", () => { $("videoVignetteVal").textContent = (+$("videoVignette").value).toFixed(2); });
   $("videoFade").addEventListener("input", () => { $("videoFadeVal").textContent = (+$("videoFade").value).toFixed(2); });
   $("videoRgbSplit").addEventListener("input", () => { $("videoRgbSplitVal").textContent = $("videoRgbSplit").value; });
-  $("videoSlice").addEventListener("input", () => { $("videoSliceVal").textContent = (+$("videoSlice").value).toFixed(2); });
   $("videoStatic").addEventListener("input", () => { $("videoStaticVal").textContent = (+$("videoStatic").value).toFixed(2); });
-  $("videoPixelate").addEventListener("input", () => { $("videoPixelateVal").textContent = $("videoPixelate").value; });
   $("videoInvert").addEventListener("input", () => { $("videoInvertVal").textContent = (+$("videoInvert").value).toFixed(2); });
+  $("videoKaleido").addEventListener("input", () => { $("videoKaleidoVal").textContent = (+$("videoKaleido").value).toFixed(2); });
+  $("videoSwirl").addEventListener("input", () => { $("videoSwirlVal").textContent = (+$("videoSwirl").value).toFixed(2); });
+  $("videoEcho").addEventListener("input", () => { $("videoEchoVal").textContent = (+$("videoEcho").value).toFixed(2); });
+  $("videoScanlines").addEventListener("input", () => { $("videoScanlinesVal").textContent = (+$("videoScanlines").value).toFixed(2); });
   $("videoPickBtn").onclick = () => $("videoIn").click();
   $("videoIn").addEventListener("change", () => {
     const f = $("videoIn").files[0]; if (!f) return;
