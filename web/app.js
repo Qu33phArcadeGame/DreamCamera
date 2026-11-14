@@ -1967,6 +1967,13 @@ async function processVideo() {
 function initVideoTab() {
   $("tabCamera").onclick = () => switchTab("camera");
   $("tabVideo").onclick = () => switchTab("video");
+  // Live tab: a launcher, not a web panel — it opens the native
+  // live-camera dream activity and must not change the Camera/Video
+  // tab state. On the public website there is no bridge, so show a note.
+  $("tabLive").onclick = () => {
+    if (window.DreamCameraBridge && window.DreamCameraBridge.openLive) window.DreamCameraBridge.openLive();
+    else setStatus("Live is in the DreamCamera app");
+  };
   $("videoMode").addEventListener("change", videoModeNote);
   videoModeNote();
   $("videoPreset").addEventListener("change", e => applyVideoPreset(e.target.value));
