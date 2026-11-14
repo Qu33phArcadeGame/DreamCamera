@@ -1,6 +1,8 @@
-# DreamCamera v1.29
+# DreamCamera v1.30
 
 Deepdream camera. Nothing else. No dreamlings, no game, no coins.
+
+v1.30: saved videos now open on the original starting image (held ~1s) and return to it at the end (held ~1s), so the beginning and end are no longer cut off. The starting image is the undreamed seed for cards shot or uploaded in the session, else the card's first frame.
 
 - **Web app** (`web/`): two stacked squares. Top = plain live viewfinder. Bottom = settings. Shoot → it dreams the photo. 50 frames per run, then Continue or Save.
 - **DSi** (`dsi/`): top screen = plain camera viewfinder. Bottom screen = settings. Same 50-frame runs, frames saved to SD.
