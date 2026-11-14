@@ -192,6 +192,7 @@ const DEFAULTS = { model: "v1", preset: 0, path: "random", frames: 50, zoomFacto
 // ===== STATE =====
 const vid = $("vid"), artCv = $("artCv");
 const seedCv = document.createElement("canvas"), tmpCv = document.createElement("canvas");
+let seedCardId = null;   // id of the card seedCv was drawn from; null when it belongs to no current card (e.g. a gallery-loaded card, whose seed was never saved)
 let settings = loadSettings();
 let MODEL = MODELS[settings.model] || MODELS.v1, P = PRE[MODEL.pre];
 let model = null, midModel = null, modelLayers = [], grads = {}, engineOrder = [], engineIdx = -1, ready = false;
@@ -864,6 +865,7 @@ async function shootAndDream() {
   const q = dims();
   card = { id: "dc" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), no: nextNumber(), name: "Dream " + new Date().toLocaleDateString(), model: MODEL.short, preset: $("presetSel").selectedOptions[0] ? $("presetSel").selectedOptions[0].textContent : "", w: q.w, h: q.h, created: Date.now(), frames: [], pathFrame: 0, zoomTotal: 1, settings: Object.assign({}, settings) };
   seedCv.width = q.w; seedCv.height = q.h; seedCv.getContext("2d").drawImage(shot, 0, 0);
+  seedCardId = card.id;
   artCv.width = q.w; artCv.height = q.h; artCv.getContext("2d").drawImage(shot, 0, 0);
   $("viewBox").classList.add("dreaming"); $("viewHint").textContent = "";
   await startDream();
@@ -1222,6 +1224,30 @@ async function exportVideo() {
     const chunks = []; rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     const done = new Promise(r => rec.onstop = r);
     rec.start(200);
+    // The video opens on the original starting image and returns to it at
+    // the end — before, it jumped straight into the dream and ended on the
+    // deepest frame, so both ends felt cut off. The starting image is the
+    // undreamed seed when this card was shot/uploaded in this session, else
+    // the card's first frame (the closest to the original a gallery-loaded
+    // card has). Each hold is ~1s: the same image drawn and requested
+    // repeatedly until a second has passed, so it holds in the recording.
+    const HOLD_MS = 1000;
+    let startImg = null, startIsCanvas = false;
+    if (seedCardId === card.id && seedCv.width) { startImg = seedCv; startIsCanvas = true; }
+    else startImg = await decodeBlob(card.frames[0]);
+    async function holdStart() {
+      const t0 = performance.now();
+      do {
+        if (startImg) {
+          const c = artCv.getContext("2d"); c.clearRect(0, 0, card.w, card.h); c.drawImage(startImg, 0, 0, card.w, card.h);
+          exCtx.clearRect(0, 0, exCv.width, exCv.height); exCtx.drawImage(startImg, 0, 0, exCv.width, exCv.height);
+        }
+        if (manualFrames) { vtrack.requestFrame(); await sleep(60); }
+        else await sleep(1000 / fpsIn);
+      } while (performance.now() - t0 < HOLD_MS);
+    }
+    setStatus("Recording video… opening…"); setBar(0);
+    await holdStart();
     for (let i = 0; i < L; i++) {
       const fi = seqFrame(i), leg = seqLeg(i), fps = leg ? fpsOut : fpsIn;
       const im = await decodeBlob(card.frames[fi]);
@@ -1234,6 +1260,9 @@ async function exportVideo() {
       if (manualFrames) { vtrack.requestFrame(); await sleep(60); }
       else await sleep(1000 / fps);
     }
+    setStatus("Recording video… closing…"); setBar(1);
+    await holdStart();
+    if (startImg && !startIsCanvas && startImg.close) startImg.close();
     await sleep(300); rec.stop(); await done;
     const blob = new Blob(chunks, { type: mime || "video/webm" });
     const ext = (mime || "").includes("mp4") ? "mp4" : "webm";
@@ -1646,6 +1675,7 @@ function initControls() {
       if (sw / sh > target) sw = sh * target; else sh = sw / target;
       c.getContext("2d").drawImage(im, (im.naturalWidth - sw) / 2, (im.naturalHeight - sh) / 2, sw, sh, 0, 0, q.w, q.h);
       seedCv.width = q.w; seedCv.height = q.h; seedCv.getContext("2d").drawImage(c, 0, 0);
+      seedCardId = card.id;
       artCv.width = q.w; artCv.height = q.h; artCv.getContext("2d").drawImage(c, 0, 0);
       $("viewBox").classList.add("dreaming"); $("viewHint").textContent = "";
       URL.revokeObjectURL(url);
