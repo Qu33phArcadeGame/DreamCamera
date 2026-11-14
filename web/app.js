@@ -187,7 +187,7 @@ const PRESETS = [
   { m: "zentangledream", name: "Zentangle weave", s: { path: "spiral", frames: 50, zoomFactor: 0.97, steps: 10, lr: 0.05, range: 0.12, segFrames: 10, sharpen: 0.35, layers: ["block_10_project_BN", "block_13_project_BN"] } },
   { m: "zentangledream", name: "Zentangle bloom", s: { path: "straight", frames: 50, zoomFactor: 0.965, steps: 10, lr: 0.05, sharpen: 0.35, layers: ["block_16_project_BN"] } },
 ];
-const DEFAULTS = { model: "v1", preset: 0, path: "random", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live", exportSize: "1080p", hueSpin: 0, saturation: 1, pulse: 0, drawnPath: [], glow: 0, soft: 0, vignette: 0, fade: 0, rgbSplit: 0, staticAmt: 0, invertAmt: 0, kaleido: 0, swirl: 0, echo: 0, scanlines: 0 };
+const DEFAULTS = { model: "v1", preset: 0, path: "random", frames: 50, zoomFactor: 0.97, steps: 4, lr: 0.04, range: 0.08, segFrames: 10, sharpen: 0.35, layers: ["mixed4c", "mixed4d"], quality: "turbo", ratio: "1:1", playFps: 12, playFpsOut: 12, boomerang: true, octaves: 3, jitter: 24, facing: "environment", modelSrc: "live", exportSize: "1080p", hueSpin: 0, saturation: 1, pulse: 0, glow: 0, soft: 0, vignette: 0, fade: 0, rgbSplit: 0, staticAmt: 0, invertAmt: 0, kaleido: 0, swirl: 0, echo: 0, scanlines: 0 };
 
 // ===== STATE =====
 const vid = $("vid"), artCv = $("artCv");
@@ -221,6 +221,7 @@ function sendLatestDreamToWidget() {
 }
 
 function loadSettings() { let s = {}; try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {}; } catch (e) {} if (s.quality === "twoK") s.quality = "max";   // 2K live quality was removed (it crashed the live dream) — fall back to Max
+  if (s.path === "drawn") s.path = "joystick"; delete s.drawnPath;   // Drawn path was replaced by the joystick
   return Object.assign({}, DEFAULTS, s); }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} updateEstimate(); }
 function setStatus(t, err) { const s = $("status"); s.textContent = t; s.className = err ? "err" : ""; }
@@ -931,12 +932,12 @@ const ZOOM_MAX = 64;  // total magnification vs the seed. It used to ease to a s
 let deep = null, deepZoom = 1, viewDepth = 1, driftX = 0, driftY = 0, lastViewDepth = 1;
 let hueTotal = 0;   // cumulative hue rotation for the Color spin effect; resets with a new dream
 let pathPhase = 0;   // where the zoom centre is along its path shape (0..1 = one full loop)
-function resetDeep() { if (deep) { deep.dispose(); deep = null; } deepZoom = 1; viewDepth = 1; driftX = 0; driftY = 0; lastViewDepth = 1; hueTotal = 0; pathPhase = 0; }
+function resetDeep() { if (deep) { deep.dispose(); deep = null; } deepZoom = 1; viewDepth = 1; driftX = 0; driftY = 0; joyCX = 0; joyCY = 0; lastViewDepth = 1; hueTotal = 0; pathPhase = 0; }
 // ===== ZOOM PATH SHAPES =====
 // The zoom centre follows a shape. Each shape is a closed loop: pathPoint
 // returns {x, y} in [-1, 1] for a phase t in [0, 1) around the loop.
 // "random" keeps the old smooth wander, "straight" holds the centre
-// still, "drawn" follows the shape the user drew in the box. Path segment
+// still, "joystick" is steered live by the stick. Path segment
 // sets how many frames one loop takes (x6), Path range how far it roams.
 const SQUARE_VERTS = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
 const TRI_VERTS = [[0, -1], [1, 1], [-1, 1]];
@@ -1001,120 +1002,54 @@ function pathPoint(shape, t) {
     default: return { x: 0, y: 0 };
   }
 }
-let drawnPath = [];   // [{x, y}] in [-1, 1] — the shape the user drew; persisted in settings.drawnPath
-function drawnPathPoint(t) {
-  // Ping-pong along the drawn points (out and back), so an open curve
-  // never jumps. The points are resampled evenly when drawn, so the
-  // speed is constant along the shape.
-  if (!drawnPath || drawnPath.length < 2) return { x: 0, y: 0 };
-  const pts = drawnPath;
-  const u = t < 0.5 ? t * 2 : (1 - t) * 2;   // 0..1 out, 1..0 back
-  const f = u * (pts.length - 1);
-  const i = Math.min(pts.length - 2, Math.floor(f));
-  const frac = f - i;
-  return { x: pts[i].x + (pts[i + 1].x - pts[i].x) * frac, y: pts[i].y + (pts[i + 1].y - pts[i].y) * frac };
+// ===== JOYSTICK =====
+// A game-style stick that steers the zoom centre live while the dream
+// runs. Push and hold to drive the centre in that direction — speed
+// scales with how far the stick is pushed. Release and the stick springs
+// back to centre; the centre holds still where it stopped. Push up to
+// look up, right to look right.
+let joyCX = 0, joyCY = 0;   // the centre, in [-1, 1] — steered by the stick
+let joyDX = 0, joyDY = 0;   // the stick's current push, -1..1 (0 = released)
+const JOY_STEP = 0.15;      // centre travel per dream frame at full push
+function joyShow() {
+  const w = $("joyWrap"); if (!w) return;
+  w.hidden = settings.path !== "joystick";
 }
-// ===== DRAW YOUR OWN PATH =====
-// The user draws a shape in the box; the zoom centre follows it. Points
-// are captured as they draw, then resampled to 64 evenly-spaced points
-// (by arc length) when they lift, so the centre moves at constant speed.
-let drawing = false, rawDrawPts = [];
-function drawPathCvRedraw() {
-  const cv = $("drawPathCv"); if (!cv) return;
-  const ctx = cv.getContext("2d");
-  ctx.clearRect(0, 0, cv.width, cv.height);
-  ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(cv.width / 2, 0); ctx.lineTo(cv.width / 2, cv.height); ctx.moveTo(0, cv.height / 2); ctx.lineTo(cv.width, cv.height / 2); ctx.stroke();
-  if (!drawnPath || drawnPath.length < 2) return;
-  ctx.strokeStyle = "#00e5ff"; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.lineCap = "round";
-  ctx.shadowColor = "rgba(0,229,255,0.8)"; ctx.shadowBlur = 6;
-  ctx.beginPath();
-  drawnPath.forEach((p, i) => {
-    const x = (p.x + 1) / 2 * cv.width, y = (p.y + 1) / 2 * cv.height;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+function joyInit() {
+  const base = $("joyBase"), knob = $("joyKnob");
+  if (!base || !knob) return;
+  const R = 44;   // how far the knob travels from centre (base 140px, knob 52px)
+  let held = false;
+  const setKnob = () => {
+    knob.style.transform = "translate(-50%,-50%) translate(" + (joyDX * R) + "px," + (joyDY * R) + "px)";
+  };
+  const fromEvent = e => {
+    const r = base.getBoundingClientRect();
+    let dx = (e.clientX - (r.left + r.width / 2)) / R;
+    let dy = (e.clientY - (r.top + r.height / 2)) / R;
+    const m = Math.hypot(dx, dy);
+    if (m > 1) { dx /= m; dy /= m; }
+    joyDX = dx; joyDY = dy;
+    setKnob();
+  };
+  base.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    held = true;
+    knob.style.transition = "none";
+    if (base.setPointerCapture && e.pointerId != null) { try { base.setPointerCapture(e.pointerId); } catch (err) {} }
+    fromEvent(e);
   });
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-  const s = drawnPath[0];
-  ctx.fillStyle = "#ff2fd6";
-  ctx.beginPath(); ctx.arc((s.x + 1) / 2 * cv.width, (s.y + 1) / 2 * cv.height, 4, 0, Math.PI * 2); ctx.fill();
-}
-function drawPathResample(pts) {
-  if (pts.length < 2) return pts.slice();
-  const lens = [0];
-  let tot = 0;
-  for (let i = 1; i < pts.length; i++) { tot += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y); lens.push(tot); }
-  if (tot < 0.001) return pts.slice(0, 1);
-  const out = [];
-  for (let k = 0; k < 64; k++) {
-    const d = (k / 64) * tot;
-    let i = 1;
-    while (i < lens.length - 1 && lens[i] < d) i++;
-    const segLen = lens[i] - lens[i - 1] || 1;
-    const u = Math.max(0, Math.min(1, (d - lens[i - 1]) / segLen));
-    out.push({ x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * u, y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * u });
-  }
-  return out;
-}
-function drawPathSave() {
-  settings.drawnPath = drawnPath.map(p => [Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000]);
-  saveSettings();
-}
-function drawPathHint() {
-  const el = $("drawHint"); if (!el) return;
-  el.textContent = (drawnPath && drawnPath.length >= 2) ? "Saved — pick Drawn in Zoom path to follow it." : "Draw a shape above, then pick Drawn in Zoom path.";
-}
-function drawPathInit() {
-  const cv = $("drawPathCv"); if (!cv) return;
-  if (settings.drawnPath && settings.drawnPath.length >= 2) {
-    drawnPath = settings.drawnPath.map(p => ({ x: p[0], y: p[1] }));
-  }
-  drawPathCvRedraw();
-  drawPathHint();
-  const pos = e => {
-    const r = cv.getBoundingClientRect();
-    const x = ((e.clientX - r.left) / r.width) * 2 - 1;
-    const y = ((e.clientY - r.top) / r.height) * 2 - 1;
-    return { x: Math.max(-1, Math.min(1, x)), y: Math.max(-1, Math.min(1, y)) };
+  base.addEventListener("pointermove", e => { if (!held) return; e.preventDefault(); fromEvent(e); });
+  const release = () => {
+    if (!held) return;
+    held = false;
+    joyDX = 0; joyDY = 0;
+    knob.style.transition = "transform .18s ease-out";
+    setKnob();
   };
-  const start = e => {
-    e.preventDefault();
-    drawing = true; rawDrawPts = [pos(e)];
-    if (cv.setPointerCapture && e.pointerId != null) { try { cv.setPointerCapture(e.pointerId); } catch (err) {} }
-  };
-  const move = e => {
-    if (!drawing) return;
-    e.preventDefault();
-    const p = pos(e);
-    const last = rawDrawPts[rawDrawPts.length - 1];
-    if (Math.hypot(p.x - last.x, p.y - last.y) < 0.02) return;   // only keep points ~3px apart
-    rawDrawPts.push(p);
-    const ctx = cv.getContext("2d");
-    ctx.strokeStyle = "#00e5ff"; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo((last.x + 1) / 2 * cv.width, (last.y + 1) / 2 * cv.height);
-    ctx.lineTo((p.x + 1) / 2 * cv.width, (p.y + 1) / 2 * cv.height);
-    ctx.stroke();
-  };
-  const end = () => {
-    if (!drawing) return;
-    drawing = false;
-    if (rawDrawPts.length >= 2) {
-      drawnPath = drawPathResample(rawDrawPts);
-      drawPathSave();
-    }
-    drawPathCvRedraw();
-    drawPathHint();
-  };
-  cv.addEventListener("pointerdown", start);
-  cv.addEventListener("pointermove", move);
-  cv.addEventListener("pointerup", end);
-  cv.addEventListener("pointercancel", end);
-  $("drawClearBtn").onclick = () => {
-    drawnPath = []; rawDrawPts = [];
-    settings.drawnPath = []; saveSettings();
-    drawPathCvRedraw(); drawPathHint();
-  };
+  base.addEventListener("pointerup", release);
+  base.addEventListener("pointercancel", release);
+  setKnob();
 }
 async function zoomRun() {
   if (!card || busy || zooming || !card.frames.length) return;
@@ -1148,7 +1083,7 @@ async function zoomRun() {
         const dreamEase = 0.25 + 0.75 * ease;
         // The zoom centre follows the selected path shape. "random" keeps
         // the old smooth wander; "straight" holds it still; the rest trace
-        // their shape, and "drawn" follows the shape in the box. Path
+        // their shape; "joystick" is steered live by the stick. Path
         // segment sets the loop length (x6 frames), Path range how far it
         // roams (0.08 = the shape's full extent, higher = wider).
         const seg = Math.max(4, Math.round(settings.segFrames || 10));
@@ -1163,9 +1098,13 @@ async function zoomRun() {
           px = driftX; py = driftY;
         } else if (settings.path === "straight") {
           px = 0; py = 0;
-        } else if (settings.path === "drawn") {
-          const dp = drawnPathPoint(pathPhase);
-          px = dp.x; py = dp.y;
+        } else if (settings.path === "joystick") {
+          // Joystick: the stick steers the centre. Push and hold to drive
+          // it in that direction; release and it holds still. Speed scales
+          // with how far the stick is pushed.
+          joyCX = Math.max(-1, Math.min(1, joyCX + joyDX * JOY_STEP));
+          joyCY = Math.max(-1, Math.min(1, joyCY + joyDY * JOY_STEP));
+          px = joyCX; py = joyCY;
         } else {
           const pp = pathPoint(settings.path, pathPhase);
           px = pp.x; py = pp.y;
@@ -1645,9 +1584,9 @@ function initControls() {
   bindRange("swirl", "swirl", v => (+v).toFixed(2));
   bindRange("echo", "echo", v => (+v).toFixed(2));
   bindRange("scanlines", "scanlines", v => (+v).toFixed(2));
-  drawPathInit();   // the draw-your-own-path box (restores a saved shape)
+  joyInit(); joyShow();   // the joystick (steers the zoom centre while dreaming)
   $("path").value = settings.path;
-  $("path").addEventListener("change", () => { settings.path = $("path").value; saveSettings(); });
+  $("path").addEventListener("change", () => { settings.path = $("path").value; saveSettings(); joyShow(); });
   $("quality").value = settings.quality;
   $("quality").addEventListener("change", () => { settings.quality = $("quality").value; saveSettings(); });
   $("exportSize").value = settings.exportSize || "1080p";
