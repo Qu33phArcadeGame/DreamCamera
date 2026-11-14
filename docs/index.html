@@ -41,7 +41,7 @@
      only horizontal drags move a slider. Taps still work everywhere. */
   #scrollArea,#videoScroll{touch-action:pan-y}
   #scrollArea *,#videoScroll *{touch-action:pan-y}
-  #drawPathCv{touch-action:none}
+  #joyBase{touch-action:none}
   /* Scroll grab bands: full-width empty strips between control groups —
      open area you can grab to scroll without touching any control. */
   .scroll-gap{grid-column:1/-1;height:32px;display:flex;align-items:center;justify-content:center;color:rgba(239,234,255,.28);font-size:16px;letter-spacing:2px}
@@ -99,7 +99,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.28</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.29</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">📷 Camera</button>
@@ -140,10 +140,12 @@
       <label><b>Zoom / frame <span class="val" id="zoomFactorVal"></span></b>
         <input type="range" id="zoomFactor" min="0.90" max="0.995" step="0.005"></label>
       <label><b>Zoom path</b>
-        <select id="path"><option value="random" selected>Random wander</option><option value="straight">Straight · hold still</option><option value="circle">Circle</option><option value="figure8">Figure 8 · infinity</option><option value="heart">Heart</option><option value="star">Star</option><option value="lissajous">Lissajous · woven</option><option value="zigzag">Zigzag</option><option value="bounce">Bounce · DVD logo</option><option value="wave">Wave</option><option value="square">Square</option><option value="triangle">Triangle</option><option value="spiral">Spiral</option><option value="leftright">Left ↔ right</option><option value="updown">Up ↕ down</option><option value="diagonal">Diagonal</option><option value="drawn">Drawn · your shape</option></select></label>
-      <div class="full"><b>Draw a path</b> <span class="val">— draw a shape, the zoom follows it</span>
-        <canvas id="drawPathCv" width="140" height="140" style="width:140px;height:140px;background:#12082a;border:1px solid rgba(255,47,214,.5);border-radius:10px;touch-action:none;display:block;margin-top:6px"></canvas>
-        <span class="row" style="margin-top:6px"><button class="ghost" id="drawClearBtn" type="button">Clear drawing</button><span class="val" id="drawHint"></span></span></div>
+        <select id="path"><option value="random" selected>Random wander</option><option value="straight">Straight · hold still</option><option value="circle">Circle</option><option value="figure8">Figure 8 · infinity</option><option value="heart">Heart</option><option value="star">Star</option><option value="lissajous">Lissajous · woven</option><option value="zigzag">Zigzag</option><option value="bounce">Bounce · DVD logo</option><option value="wave">Wave</option><option value="square">Square</option><option value="triangle">Triangle</option><option value="spiral">Spiral</option><option value="leftright">Left ↔ right</option><option value="updown">Up ↕ down</option><option value="diagonal">Diagonal</option><option value="joystick">Joystick · steer the camera</option></select></label>
+      <div class="full" id="joyWrap" hidden><b>Joystick</b> <span class="val">— drag to steer the camera while it dreams</span>
+        <div id="joyBase" style="width:140px;height:140px;border-radius:50%;background:#12082a;border:1px solid rgba(255,47,214,.5);position:relative;touch-action:none;margin-top:6px">
+          <div id="joyKnob" style="position:absolute;left:50%;top:50%;width:52px;height:52px;border-radius:50%;background:linear-gradient(180deg,#ff2fd6,#a855f7);transform:translate(-50%,-50%);box-shadow:0 4px 12px rgba(0,0,0,.5),inset 0 2px 0 rgba(255,255,255,.35)"></div>
+        </div>
+        <span class="val" id="joyHint">Push to steer — release to hold still</span></div>
       <label><b>Path range <span class="val" id="rangeVal"></span></b>
         <input type="range" id="range" min="0" max="0.20" step="0.01"></label>
       <label><b>Path segment <span class="val" id="segFramesVal"></span></b>
