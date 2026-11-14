@@ -1857,7 +1857,32 @@ async function processVideo() {
   $("vidOut").style.display = "none";
   $("videoHint").textContent = "Dreaming… watch it build here.";
   let prev = null, vHueTotal = 0;   // vHueTotal: the video's own cumulative hue for Color spin (separate from the Camera's)
+  // The video opens on the original starting image and returns to it at
+  // the end — before, it jumped straight into the dream and ended on the
+  // deepest frame, so both ends felt cut off. The starting image is the
+  // source video's first frame, drawn raw (no dream, no style/weave mix,
+  // no colour effects). Each hold is ~1s: the same frame drawn and
+  // requested repeatedly until a second has passed, so it holds in the
+  // recording. If the seek to the start fails, the hold is skipped — the
+  // dream loop reports a bad seek itself, and the recorder is never wedged.
+  const HOLD_MS = 1000;
+  async function holdRaw() {
+    const ok = await seekTo(src, 0);
+    if (!ok || !videoRunning) return;
+    const t0 = performance.now();
+    do {
+      inCv.getContext("2d").drawImage(src, 0, 0, vd.w, vd.h);
+      const dc = dispCv.getContext("2d");
+      dc.clearRect(0, 0, dispCv.width, dispCv.height);
+      dc.drawImage(inCv, 0, 0, dispCv.width, dispCv.height);
+      pv.getContext("2d").drawImage(dispCv, 0, 0, pv.width, pv.height);
+      if (manualFrames) { vtrack.requestFrame(); await sleep(60); }
+      else await sleep(1000 / fps);
+    } while (performance.now() - t0 < HOLD_MS && videoRunning);
+  }
   try {
+    setVideoStatus("Opening on the original image…");
+    await holdRaw();
     for (let i = 0; i < total && videoRunning; i++) {
       const seeked = await seekTo(src, Math.min(i / fps, Math.max(0, dur - 0.001)));
       if (!seeked) { setVideoStatus("That video stopped seeking at frame " + (i + 1) + " — try a different file.", true); break; }
@@ -1915,6 +1940,7 @@ async function processVideo() {
       else await sleep(1000 / fps);
       await tf.nextFrame();
     }
+    if (videoRunning) { setVideoStatus("Closing on the original image…"); await holdRaw(); }
   } catch (e) {
     console.error(e);
     setVideoStatus("Video dream failed: " + (e && e.message || e), true);
