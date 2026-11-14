@@ -21,10 +21,10 @@
   .square.dreaming canvas{display:block}
   .square.dreaming video{display:none}
   .square .hint{position:absolute;inset:auto 0 8px 0;text-align:center;font-size:12px;opacity:.65;pointer-events:none}
-  .panel{margin-top:10px;background:rgba(20,8,46,.88);border:1px solid rgba(168,85,247,.45);border-radius:14px;padding:12px;box-shadow:0 0 24px rgba(123,47,255,.25)}
+  .panel{margin-top:10px;background:rgba(20,8,46,.88);border:1px solid rgba(168,85,247,.45);border-radius:14px;padding:16px;box-shadow:0 0 24px rgba(123,47,255,.25)}
   .panel h2{font-size:13px;margin:0 0 8px;color:#7df9ff;text-shadow:0 0 10px rgba(0,229,255,.6);text-transform:uppercase;letter-spacing:1px}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 12px}
-  .grid label{display:block;font-size:12px;opacity:.85;padding:2px 0}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:28px 12px}
+  .grid label{display:block;font-size:12px;opacity:.85;padding:6px 0;touch-action:pan-y}
   .grid label b{display:block;font-weight:600;margin-bottom:2px}
   .grid select,.grid input[type=number],.grid input[type=text]{width:100%;background:#150a33;color:#efeaff;border:1px solid #a855f7;border-radius:8px;padding:6px;font-size:14px}
   .grid select:focus,.grid input:focus{outline:none;border-color:#00e5ff;box-shadow:0 0 10px rgba(0,229,255,.5)}
@@ -33,6 +33,18 @@
      menu kept accidentally changing whatever slider your finger landed
      on (that is how a Vignette or RGB split could turn itself on). */
   .grid input[type=range]{width:100%;accent-color:#ff2fd6;touch-action:pan-y}
+  /* Scrolling: a vertical swipe must scroll the menu no matter where it
+     starts — on a slider, on a label, on a button. The v1.26 fix only put
+     pan-y on the range inputs, but a swipe lands on the label (which wraps
+     the input and forwards the touch to it), so the slider still grabbed
+     it. pan-y on the whole scroll area means vertical drags scroll and
+     only horizontal drags move a slider. Taps still work everywhere. */
+  #scrollArea,#videoScroll{touch-action:pan-y}
+  #scrollArea *,#videoScroll *{touch-action:pan-y}
+  #drawPathCv{touch-action:none}
+  /* Scroll grab bands: full-width empty strips between control groups —
+     open area you can grab to scroll without touching any control. */
+  .scroll-gap{grid-column:1/-1;height:32px;display:flex;align-items:center;justify-content:center;color:rgba(239,234,255,.28);font-size:16px;letter-spacing:2px}
   .grid .val{font-size:11px;opacity:.7}
   .full{grid-column:1/-1}
   .layers{display:flex;flex-wrap:wrap;gap:6px}
@@ -87,7 +99,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.27</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.28</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">📷 Camera</button>
@@ -120,6 +132,7 @@
       </label>
       <label class="full"><b>Preset</b><select id="presetSel"></select></label>
       <label class="full"><b>Dream layers</b><span class="layers" id="layerBox"></span></label>
+      <div class="scroll-gap" aria-hidden="true">⋮</div>
       <label><b>Steps / frame <span class="val" id="stepsVal"></span></b>
         <input type="range" id="steps" min="1" max="30" step="1"></label>
       <label><b>Learning rate <span class="val" id="lrVal"></span></b>
@@ -143,6 +156,7 @@
         <select id="exportSize"><option value="720p">720p</option><option value="1080p" selected>1080p</option><option value="2k">2K</option><option value="4k">4K</option><option value="8k">8K</option></select></label>
       <label><b>Photo ratio</b>
         <select id="ratio"><option value="1:1">Square · 1:1</option><option value="9:16">Portrait · 9:16</option><option value="16:9">Landscape · 16:9</option></select></label>
+      <div class="scroll-gap" aria-hidden="true">⋮</div>
       <label><b>Play fps in <span class="val" id="playFpsVal"></span></b>
         <input type="range" id="playFps" min="2" max="30" step="1"></label>
       <label><b>Play fps out <span class="val" id="playFpsOutVal"></span></b>
@@ -161,6 +175,7 @@
         <input type="range" id="saturation" min="1" max="2.5" step="0.05"></label>
       <label><b>Pulse <span class="val" id="pulseVal"></span></b>
         <input type="range" id="pulse" min="0" max="0.8" step="0.05"></label>
+      <div class="scroll-gap" aria-hidden="true">⋮</div>
       <label><b>Glow <span class="val" id="glowVal"></span></b>
         <input type="range" id="glow" min="0" max="1" step="0.05"></label>
       <label><b>Soft <span class="val" id="softVal"></span></b>
@@ -183,6 +198,7 @@
         <input type="range" id="echo" min="0" max="1" step="0.05"></label>
       <label><b>Scanlines <span class="val" id="scanlinesVal"></span></b>
         <input type="range" id="scanlines" min="0" max="1" step="0.05"></label>
+      <div class="scroll-gap" aria-hidden="true">⋮</div>
       <label><b>Camera</b>
         <select id="facing"><option value="environment">Back</option><option value="user">Front</option></select></label>
       <label><b>Model source</b>
@@ -280,6 +296,7 @@
         <label><b>Dream size</b>
           <select id="videoSize"><option value="256">256 · fast</option><option value="384">384</option><option value="512" selected>512</option><option value="768">768</option><option value="1024">1024 · max (slow)</option></select>
           <span class="val">How big each frame is dreamed. Bigger is sharper — and slower.</span></label>
+        <div class="scroll-gap" aria-hidden="true">⋮</div>
         <label><b>Steps / frame <span class="val" id="videoStepsVal">3</span></b>
           <input type="range" id="videoSteps" min="1" max="5" step="1" value="3"></label>
         <label id="mixRow"><b>Style mix <span class="val" id="videoMixVal">0.70</span></b>
@@ -302,6 +319,7 @@
           <input type="range" id="videoSaturation" min="1" max="2.5" step="0.05" value="1"></label>
         <label><b>Pulse <span class="val" id="videoPulseVal">0.00</span></b>
           <input type="range" id="videoPulse" min="0" max="0.8" step="0.05" value="0"></label>
+        <div class="scroll-gap" aria-hidden="true">⋮</div>
         <label><b>Glow <span class="val" id="videoGlowVal">0.00</span></b>
           <input type="range" id="videoGlow" min="0" max="1" step="0.05" value="0"></label>
         <label><b>Soft <span class="val" id="videoSoftVal">0.00</span></b>
