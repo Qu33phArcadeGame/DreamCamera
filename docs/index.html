@@ -99,11 +99,11 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.49</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.50</span></header>
 <main>
   <div class="tabs">
-    <button class="tab on" id="tabCamera">Camera</button>
-    <button class="tab" id="tabVideo">Video</button>
+    <button class="tab on" id="tabCamera">Photos</button>
+    <button class="tab" id="tabVideo">Videos</button>
     <button class="tab" id="tabLive">Live</button>
   </div>
   <div id="cameraTab">
@@ -243,7 +243,7 @@
   </div>
   </div>
 
-  <!-- VIDEO TAB: deepdream a whole video (up to 15s) -->
+  <!-- VIDEO TAB: deepdream a whole video -->
   <div id="videoTab" hidden>
     <div class="square" id="videoBox">
       <video id="vidOut" controls playsinline></video>
@@ -260,7 +260,7 @@
       <div id="videoBar"><i></i></div>
       <div class="grid">
         <label class="full"><b>Video</b>
-          <button class="ghost" id="videoPickBtn" style="width:100%">Choose a video (up to 15s)</button>
+          <button class="ghost" id="videoPickBtn" style="width:100%">Choose a video</button>
           <input type="file" id="videoIn" accept="video/*" hidden>
           <span class="val" id="videoInfo"></span>
         </label>
@@ -347,7 +347,7 @@
           <input type="range" id="videoScanlines" min="0" max="1" step="0.05" value="0"></label>
         <label class="full"><b>Detail pass</b>
           <select id="videoDetail"><option value="0" selected>Off · dream size only</option><option value="4k">4K · real detail, dreamed tile by tile (slow)</option></select>
-          <span class="val">Turns each dreamed frame into true 4K — the frame is dreamed again at 3840px, tile by tile, so the detail is real, not an upscale. A 15s clip can take over an hour; short clips are quick.</span></label>
+          <span class="val">Turns each dreamed frame into true 4K — the frame is dreamed again at 3840px, tile by tile, so the detail is real, not an upscale. A long clip can take over an hour; short clips are quick.</span></label>
       </div>
       <div id="videoStatus">Pick a video to begin.</div>
       <div class="row">
