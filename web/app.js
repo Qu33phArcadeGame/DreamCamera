@@ -1686,7 +1686,7 @@ function initControls() {
 }
 
 // ===== VIDEO TAB =====
-// Deepdream a whole video (up to 15s). Three modes:
+// Deepdream a whole video. Three modes:
 //  Frame Dream — dream every frame, stitch it back together.
 //  Photo Transfer — a photo becomes the dream overlay on the video.
 //  Dreamweave — the style photo is dreamed live while the video plays,
@@ -1808,7 +1808,7 @@ async function processVideo() {
     try { src.load(); } catch (e) { finish(); }
     setTimeout(finish, 8000);
   });
-  const dur = Math.min(15, src.duration || 0);
+  const dur = src.duration || 0;
   const fps = parseInt($("videoFps").value, 10) || 12;
   const total = Math.max(1, Math.floor(dur * fps));
   const vd = videoDims(src.videoWidth, src.videoHeight);
@@ -2007,8 +2007,8 @@ function initVideoTab() {
     v.onloadedmetadata = () => {
       const d = v.duration || 0;
       videoMeta = { duration: d, width: v.videoWidth, height: v.videoHeight };
-      $("videoInfo").textContent = f.name + " · " + d.toFixed(1) + "s" + (d > 15 ? " (first 15s used)" : "") + " · " + v.videoWidth + "×" + v.videoHeight;
-      setVideoStatus(d > 15 ? "That video is over 15s — only the first 15s will be dreamed." : "Video ready. Pick a mode and dream it.");
+      $("videoInfo").textContent = f.name + " · " + d.toFixed(1) + "s · " + v.videoWidth + "×" + v.videoHeight;
+      setVideoStatus("Video ready. Pick a mode and dream it.");
       updateVideoUI();
     };
     v.onerror = () => { setVideoStatus("Could not read that video.", true); videoMeta = null; updateVideoUI(); };
