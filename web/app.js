@@ -318,7 +318,14 @@ function patchBatchNorm(m) {
 }
 function modelUrl() { return settings.modelSrc === "local" ? MODEL.local : MODEL.live; }
 async function activate(name) {
-  if (model) { model.dispose(); model = null; } midModel = null; grads = {}; if (cur) { cur.dispose(); cur = null; }
+  // Dispose defensively: on a lost GPU device, disposing the old model's
+  // weights can throw — that must not block switching to a fallback
+  // backend. Null the references first, then dispose best-effort.
+  const oldModel = model; model = null;
+  try { if (oldModel) oldModel.dispose(); } catch (e) {}
+  midModel = null; grads = {};
+  const oldCur = cur; cur = null;
+  try { if (oldCur) oldCur.dispose(); } catch (e) {}
   if (!(await tryBackend(name))) throw new Error(name + " unavailable");
   $("engineBtn").textContent = "Engine: " + LABEL[name];
   setStatus("Loading " + MODEL.label + " on " + LABEL[name] + "…"); setBar(0);
@@ -378,6 +385,32 @@ async function ensureReady() {
   engineIdx = -1;
   if (await nextEngine()) { ready = true; return true; }
   setStatus("Dreaming failed on every engine.", true); return false;
+}
+// A lost GPU device kills every frame after it: the error surfaces as a
+// failed readback ("mapAsync ... [Device] is lost"), but the backend
+// itself is broken, so skipping frames just marches to the abort. Detect
+// that case so the video run can recover instead of dying.
+function isGpuError(e) {
+  const m = String((e && e.message) || e || "").toLowerCase();
+  return (m.includes("device") && m.includes("lost"))
+      || m.includes("mapasync")
+      || m.includes("gpubuffer")
+      || m.includes("context lost")
+      || m.includes("out of memory")
+      || m.includes("allocation failed");
+}
+// Drop the dead GPU backend and reload the dream model on a CPU backend
+// (WASM first, then plain JavaScript). The GPU backends are not tried —
+// a lost device means the GPU path itself is suspect. Returns the new
+// backend name, or null when no fallback would start.
+async function switchVideoBackend() {
+  const curB = tf.getBackend();
+  for (const name of ["wasm", "cpu"]) {
+    if (name === curB) continue;
+    try { await activate(name); return name; }
+    catch (e) { console.warn("video backend fallback to " + name + " failed", e); }
+  }
+  return null;
 }
 
 // ===== DEEPDREAM CORE (ported from the Dreamlings generator) =====
@@ -1924,7 +1957,7 @@ async function processVideo() {
   const pv = $("vidPrev"); pv.width = vd.w; pv.height = vd.h; pv.style.display = "block";
   $("vidOut").style.display = "none";
   $("videoHint").textContent = "Dreaming… watch it build here.";
-  let prev = null, vHueTotal = 0, dreamed = 0, skipped = 0, consecFail = 0, stopReason = null;   // vHueTotal: the video's own cumulative hue for Color spin (separate from the Camera's). dreamed/skipped count what actually happened — the final status reports those, not the planned total.
+  let prev = null, vHueTotal = 0, dreamed = 0, skipped = 0, consecFail = 0, stopReason = null, reused = 0, consecStale = 0, switchedTo = null;   // vHueTotal: the video's own cumulative hue for Color spin (separate from the Camera's). dreamed/skipped count what actually happened — the final status reports those, not the planned total. reused counts frames that fell back to the last good decoded frame; switchedTo records a GPU-backend fallback.
   // The video opens on the original starting image and returns to it at
   // the end — before, it jumped straight into the dream and ended on the
   // deepest frame, so both ends felt cut off. The starting image is the
@@ -1948,6 +1981,33 @@ async function processVideo() {
       else await sleep(1000 / fps);
     } while (performance.now() - t0 < HOLD_MS && videoRunning);
   }
+  // Get the frame at time `t` into the video element, so drawImage shows
+  // it. The v1.51 prime plays the video once then pauses it — but after
+  // that, frame 1's seek to 0 is a no-op (the playhead is already there),
+  // and every REAL forward seek after it fails: a paused, invisible
+  // video's decoder will not decode forward in this WebView, so `seeked`
+  // never fires. Playing forward to the target uses the decoder's normal
+  // path and is reliable; a seek is only the fallback for going backward
+  // (or when playing stalls). Returns "ok" (a fresh frame at/near t),
+  // "stale" (could not reach t, but the element still shows the last good
+  // frame — dream that instead of skipping, so the output stays complete),
+  // or "fail" (the element has never decoded a frame).
+  async function acquireFrame(t) {
+    const EPS = 0.05;
+    if (src.readyState >= 2 && Math.abs(src.currentTime - t) <= EPS) return "ok";
+    if (src.currentTime < t - EPS) {
+      try {
+        const p = src.play(); if (p) p.catch(() => {});
+        const t0 = performance.now();
+        while (src.currentTime < t - 0.005 && performance.now() - t0 < 3000 && videoRunning) await sleep(30);
+        try { src.pause(); } catch (e) {}
+        if (src.readyState >= 2 && src.currentTime >= t - EPS) return "ok";
+      } catch (e) {}
+      // Playing stalled — fall through to a seek.
+    }
+    if (await seekTo(src, t)) return "ok";
+    return (src.readyState >= 2) ? "stale" : "fail";
+  }
   try {
     setVideoStatus("Opening on the original image…");
     await holdRaw();
@@ -1957,14 +2017,19 @@ async function processVideo() {
     // out 1s long showing only the first frame. Now a bad frame is
     // skipped and the run carries on; only five bad frames in a row stop
     // it, and the final status says how many frames were actually dreamed.
-    for (let i = 0; i < total && videoRunning; i++) {
-      const seeked = await seekTo(src, Math.min(i / fps, Math.max(0, dur - 0.001)));
-      if (!seeked) {
+    // The loop is a while loop (not for) so a frame can be retried on a
+    // fallback backend without advancing past it.
+    let i = 0;
+    while (i < total && videoRunning) {
+      const target = Math.min(i / fps, Math.max(0, dur - 0.001));
+      const acq = await acquireFrame(target);
+      if (acq === "fail") {
         skipped++; consecFail++;
-        setVideoStatus("Frame " + (i + 1) + " would not seek — skipping it…");
-        if (consecFail >= 5) { stopReason = "the video stopped seeking at frame " + (i + 1); break; }
-        continue;
+        setVideoStatus("Frame " + (i + 1) + " could not be read — skipping it…");
+        if (consecFail >= 5) { stopReason = "the video stopped giving frames at frame " + (i + 1); break; }
+        i++; continue;
       }
+      const stale = acq === "stale";
       let cur = null;
       try {
         inCv.getContext("2d").drawImage(src, 0, 0, vd.w, vd.h);
@@ -2013,7 +2078,7 @@ async function processVideo() {
         vHueTotal = (vHueTotal + (parseFloat($("videoHueSpin").value) || 0)) % 360;
         applyFx(dispCv, videoFx(vHueTotal));
         pv.getContext("2d").drawImage(dispCv, 0, 0, pv.width, pv.height);   // live preview: the new frame, in order
-        if (prev) prev.dispose();
+        if (prev) { try { prev.dispose(); } catch (e2) {} }   // disposing on a lost device must not fail an otherwise good frame
         prev = cur;
         setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total);
         setVideoBar((i + 1) / total);
@@ -2021,12 +2086,43 @@ async function processVideo() {
         else await sleep(1000 / fps);
         await tf.nextFrame();
         dreamed++; consecFail = 0;
+        if (stale) { reused++; consecStale++; } else consecStale = 0;
+        // Ten stale frames in a row means the decoder is stuck repeating
+        // the same image — stop with a clear reason instead of freezing
+        // the rest of the video on one frame.
+        if (consecStale >= 10) { stopReason = "the video decoder stopped advancing at frame " + (i + 1) + " — frames were repeating the last good one"; break; }
+        i++;
       } catch (e) {
         console.error(e);
         try { if (cur && cur !== prev) cur.dispose(); } catch (e2) {}
+        // A lost GPU device kills every frame after it — the backend
+        // itself is broken, so skipping frames just marches to the abort.
+        // Recover instead: drop the dead backend, reload the model on
+        // WASM (then CPU), and retry this frame there.
+        if (isGpuError(e)) {
+          try { if (prev) prev.dispose(); } catch (e2) {}
+          prev = null;
+          try { if (styleT) styleT.dispose(); } catch (e2) {}
+          styleT = null;
+          const nb = await switchVideoBackend();
+          if (nb) {
+            switchedTo = nb;
+            // The style texture lived on the dead backend; re-dream it on
+            // the new one (non-frame modes only). If it cannot be remade,
+            // the run cannot continue in this mode.
+            if (mode !== "frame") {
+              try { styleT = await makeStyleTexture(vd.w, vd.h); }
+              catch (e3) { stopReason = "switched to " + LABEL[nb] + " but the style photo could not be re-dreamed: " + (e3 && e3.message || e3); break; }
+            }
+            setVideoStatus("The dream engine was lost — switched to " + LABEL[nb] + ", carrying on…");
+            consecFail = 0; consecStale = 0;
+            continue;   // retry frame i on the new backend
+          }
+        }
         skipped++; consecFail++;
         setVideoStatus("Frame " + (i + 1) + " failed (" + (e && e.message || e) + ") — skipping it…");
         if (consecFail >= 5) { stopReason = "frame " + (i + 1) + " failed: " + (e && e.message || e); break; }
+        i++;
         continue;
       }
     }
@@ -2037,8 +2133,10 @@ async function processVideo() {
   }
   try { rec.stop(); await done; } catch (e) { console.error(e); }
   try { src.remove(); } catch (e) {}
-  if (prev) { prev.dispose(); prev = null; }
-  if (styleT) { styleT.dispose(); styleT = null; }
+  try { if (prev) prev.dispose(); } catch (e) {}
+  prev = null;
+  try { if (styleT) styleT.dispose(); } catch (e) {}
+  styleT = null;
   const wasStopped = !videoRunning;   // Stop button pressed mid-run (videoRunning is cleared just below)
   videoRunning = false;
   videoOutBlob = new Blob(chunks, { type: mime || "video/webm" });
@@ -2047,15 +2145,16 @@ async function processVideo() {
   // "Done — {total} frames" even when the run died after the first frame,
   // which is how a 1s video passed for a finished 60s one.
   const dims = detailOn ? hiD.w + "×" + hiD.h + " true 4K" : vd.w + "×" + vd.h;
+  const extra = (reused ? " · " + reused + " reused the last good frame" : "") + (switchedTo ? " · engine switched to " + LABEL[switchedTo] : "");
   if (videoOutBlob.size) {
     if (videoOutUrl) URL.revokeObjectURL(videoOutUrl);
     videoOutUrl = URL.createObjectURL(videoOutBlob);
     $("vidOut").src = videoOutUrl;
     $("videoHint").textContent = "";
-    if (stopReason) setVideoStatus("Stopped — " + stopReason + ". Dreamed " + dreamed + " of " + total + " frames · " + dims + ".", true);
-    else if (wasStopped) setVideoStatus("Stopped — dreamed " + dreamed + " of " + total + " frames · " + dims + ". Watch it above, or save it.");
+    if (stopReason) setVideoStatus("Stopped — " + stopReason + ". Dreamed " + dreamed + " of " + total + " frames · " + dims + extra + ".", true);
+    else if (wasStopped) setVideoStatus("Stopped — dreamed " + dreamed + " of " + total + " frames · " + dims + extra + ". Watch it above, or save it.");
     else if (dreamed === 0) setVideoStatus("No frames were dreamed — try a different file.", true);
-    else setVideoStatus("Done — " + dreamed + " of " + total + " frames · " + dims + (skipped ? " · " + skipped + " skipped" : "") + ". Watch it above, or save it.");
+    else setVideoStatus("Done — " + dreamed + " of " + total + " frames · " + dims + (skipped ? " · " + skipped + " skipped" : "") + extra + ". Watch it above, or save it.");
   } else {
     videoOutBlob = null;
     $("videoHint").textContent = "Dreamed video plays here";
