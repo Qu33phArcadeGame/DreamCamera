@@ -318,7 +318,7 @@ function patchBatchNorm(m) {
 }
 function modelUrl() { return settings.modelSrc === "local" ? MODEL.local : MODEL.live; }
 async function activate(name) {
-  if (model) { model.dispose(); model = null; } midModel = null; grads = {}; if (cur) { cur.dispose(); cur = null; }
+  try { if (model) model.dispose(); } catch (e) {} model = null; midModel = null; grads = {}; try { if (cur) cur.dispose(); } catch (e) {} cur = null;   // disposals must not throw: on a lost device, disposing the old model must not block switching to a fallback engine
   if (!(await tryBackend(name))) throw new Error(name + " unavailable");
   $("engineBtn").textContent = "Engine: " + LABEL[name];
   setStatus("Loading " + MODEL.label + " on " + LABEL[name] + "…"); setBar(0);
@@ -1701,6 +1701,19 @@ function videoDims(vw, vh) {
   if (vw >= vh) return { w: Math.round(short * vw / vh), h: short };
   return { w: short, h: Math.round(short * vh / vw) };
 }
+// The video DREAM runs smaller than the video itself: one gradient step
+// through a free-size model (v1, the default) at 512×1109 is a huge GPU
+// allocation in the Android WebView and loses the device ("[Device] is
+// lost"). Photos dreams at 192–256 by default and works reliably, so the
+// video dream is capped to the same 256 short side. The output video keeps
+// the size from Dream size — the dreamed frame is upscaled onto it.
+const VIDEO_DREAM_MAX = 256;
+function videoDreamDims(vd) {
+  const short = Math.min(vd.w, vd.h);
+  if (short <= VIDEO_DREAM_MAX) return { w: vd.w, h: vd.h };
+  const s = VIDEO_DREAM_MAX / short;
+  return { w: Math.max(1, Math.round(vd.w * s)), h: Math.max(1, Math.round(vd.h * s)) };
+}
 function detailDims(vw, vh) {
   const long = 3840;   // 4K detail pass: long side 3840, aspect preserved
   if (vw >= vh) return { w: long, h: Math.round(long * vh / vw) };
@@ -1735,7 +1748,7 @@ function applyVideoPreset(name) {
   $("videoSteps").value = p.steps; $("videoStepsVal").textContent = p.steps;
   $("videoMix").value = p.mix; $("videoMixVal").textContent = p.mix.toFixed(2);
   $("videoWeave").value = p.weave; $("videoWeaveVal").textContent = p.weave.toFixed(2);
-  $("videoZoom").value = p.zoom ? "1" : "0";
+  $("videoZoom").value = p.zoom ? "inout" : "0";
   if (p.size != null) { $("videoSize").value = String(p.size); }
   if (p.styleZoom != null) { $("videoStyleZoom").value = p.styleZoom; $("videoStyleZoomVal").textContent = p.styleZoom.toFixed(3); }
   if (p.styleRate != null) { $("videoStyleRate").value = String(p.styleRate); }
@@ -1788,6 +1801,21 @@ function seekTo(v, t) {
     setTimeout(() => finish(false), 8000);
   });
 }
+// A lost WebGPU device kills every frame after it — the old code just
+// reported "Video dream failed" and stopped. Instead, drop the dead
+// backend and carry on on WASM/CPU, retrying the same frame. (No
+// play-forward seeking here — seeks stay the plain seekTo from v1.50.)
+function isGpuError(e) {
+  const m = String((e && e.message) || e || "").toLowerCase();
+  return (m.includes("device") && m.includes("lost")) || m.includes("mapasync") || m.includes("gpubuffer") || m.includes("context lost") || m.includes("out of memory") || m.includes("allocation failed");
+}
+async function switchVideoBackend() {
+  // Returns the backend name we landed on, or null if none works.
+  for (const name of ["wasm", "cpu"]) {
+    try { await activate(name); return name; } catch (e) { console.warn("video backend " + name + " failed", e); }
+  }
+  return null;
+}
 async function processVideo() {
   if (videoRunning) return;
   if (!videoMeta) { setVideoStatus("Pick a video first — it takes a second to read.", true); return; }
@@ -1813,6 +1841,8 @@ async function processVideo() {
   const fps = parseInt($("videoFps").value, 10) || 12;
   const total = Math.max(1, Math.floor(dur * fps));
   const vd = videoDims(src.videoWidth, src.videoHeight);
+  const dd = videoDreamDims(vd);   // dream size (capped) — the output stays vd
+  const dreamCv = document.createElement("canvas"); dreamCv.width = dd.w; dreamCv.height = dd.h;
   // 4K detail pass: each dreamed frame is upscaled to 3840 on the long
   // side and dreamed again at that size, tile by tile — real 4K detail,
   // not an upscale. It is slow (~20-30s a frame), so it is opt-in.
@@ -1825,7 +1855,7 @@ async function processVideo() {
   const dispCv = detailOn ? hiCv : outCv;   // what the recorder + preview show
   const tileScratch = detailOn ? {} : null;   // reused across frames, so the 4K canvases are not re-allocated every frame
   let styleT = null;
-  if (mode !== "frame") { setVideoStatus("Dreaming the style photo…"); styleT = await makeStyleTexture(vd.w, vd.h); }
+  if (mode !== "frame") { setVideoStatus("Dreaming the style photo…"); styleT = await makeStyleTexture(dd.w, dd.h); }
   // Record one frame per dreamed frame, not in real time: each frame takes
   // seconds to dream, so a live captureStream(fps) records dozens of
   // duplicate frames per dreamed frame and the saved video comes out
@@ -1858,6 +1888,7 @@ async function processVideo() {
   $("vidOut").style.display = "none";
   $("videoHint").textContent = "Dreaming… watch it build here.";
   let prev = null, vHueTotal = 0;   // vHueTotal: the video's own cumulative hue for Color spin (separate from the Camera's)
+  let dreamed = 0, engineSwitched = null, videoDone = false;   // honest end status: how many frames were actually dreamed, and whether the engine switched
   // The video opens on the original starting image and returns to it at
   // the end — before, it jumped straight into the dream and ended on the
   // deepest frame, so both ends felt cut off. The starting image is the
@@ -1884,40 +1915,73 @@ async function processVideo() {
   try {
     setVideoStatus("Opening on the original image…");
     await holdRaw();
-    for (let i = 0; i < total && videoRunning; i++) {
+    let i = 0, consecFail = 0;
+    while (i < total && videoRunning) {
+      await sleep(0);   // let the UI breathe between frames — one long dream used to freeze the app
       const seeked = await seekTo(src, Math.min(i / fps, Math.max(0, dur - 0.001)));
       if (!seeked) { setVideoStatus("That video stopped seeking at frame " + (i + 1) + " — try a different file.", true); break; }
-      inCv.getContext("2d").drawImage(src, 0, 0, vd.w, vd.h);
-      let cur = canvasToTensor(inCv);
-      if (mode === "dreamweave" && prev) {
-        const weave = parseFloat($("videoWeave").value) || 0.3;
-        const w = tf.tidy(() => cur.mul(1 - weave).add(prev.mul(weave)));   // weave: carry the last frame forward
-        cur.dispose(); cur = w;
-      }
-      if (mode !== "frame" && styleT) {
-        // The style knobs are read live, so you can turn the zoom or the
-        // morph speed up and down while the video is dreaming.
-        const styleRate = parseInt($("videoStyleRate").value, 10) || 3;
-        if (mode === "dreamweave" && i % styleRate === 0) {   // the style itself dreams — it visibly morphs and dives into the photo as the video plays
-          // The style zooms in and dreams along with the video — extra
-          // inception: the overlay is a living dream, not a static picture.
-          const sz = parseFloat($("videoStyleZoom").value) || 0.97;
-          const ss = parseInt($("videoStyleSteps").value, 10) || 3;
-          const zs = zoomCrop(styleT, sz, 0, 0, 0); styleT.dispose(); styleT = zs;
-          styleT = dreamSteps(styleT, settings.lr, ss, false);
+      dreamCv.getContext("2d").drawImage(src, 0, 0, dd.w, dd.h);   // dream small; the output stays vd
+      let cur = null;
+      try {
+        cur = canvasToTensor(dreamCv);
+        if (mode === "dreamweave" && prev) {
+          const weave = parseFloat($("videoWeave").value) || 0.3;
+          const w = tf.tidy(() => cur.mul(1 - weave).add(prev.mul(weave)));   // weave: carry the last frame forward
+          cur.dispose(); cur = w;
         }
-        const mix = parseFloat($("videoMix").value) || 0.5;
-        const b = tf.tidy(() => cur.mul(1 - mix).add(styleT.mul(mix)));
-        cur.dispose(); cur = b;
+        if (mode !== "frame" && styleT) {
+          // The style knobs are read live, so you can turn the zoom or the
+          // morph speed up and down while the video is dreaming.
+          const styleRate = parseInt($("videoStyleRate").value, 10) || 3;
+          if (mode === "dreamweave" && i % styleRate === 0) {   // the style itself dreams — it visibly morphs and dives into the photo as the video plays
+            // The style zooms in and dreams along with the video — extra
+            // inception: the overlay is a living dream, not a static picture.
+            const sz = parseFloat($("videoStyleZoom").value) || 0.97;
+            const ss = parseInt($("videoStyleSteps").value, 10) || 3;
+            const zs = zoomCrop(styleT, sz, 0, 0, 0); styleT.dispose(); styleT = zs;
+            styleT = dreamSteps(styleT, settings.lr, ss, false);
+          }
+          const mix = parseFloat($("videoMix").value) || 0.5;
+          const b = tf.tidy(() => cur.mul(1 - mix).add(styleT.mul(mix)));
+          cur.dispose(); cur = b;
+        }
+        // Zoom path: the zoom is driven by frame position, so it actually
+        // moves over the video. In & out oscillates (sine wave) a few
+        // times; In only grows linearly to the amount by the end.
+        const zPath = $("videoZoom").value;
+        if (zPath !== "0") {
+          const p = total > 1 ? i / (total - 1) : 0;
+          const cycles = Math.max(1, Math.min(5, parseInt($("videoZoomCycles").value, 10) || 3));
+          const maxMag = parseFloat($("videoZoomAmount").value) || 2;
+          const mag = zPath === "inout" ? 1 + (maxMag - 1) * (1 - Math.cos(2 * Math.PI * cycles * p)) / 2 : 1 + (maxMag - 1) * p;
+          const z = zoomCrop(cur, 1 / mag, 0, 0, 0); cur.dispose(); cur = z;
+        }
+        const steps = parseInt($("videoSteps").value, 10) || 2;
+        const pulseF = 1 + (parseFloat($("videoPulse").value) || 0) * Math.sin(i * 0.25);   // Pulse: the dream strength breathes, one full breath every ~25 frames
+        cur = dreamSteps(cur, settings.lr * pulseF, steps, true);
+        await tensorToCanvas(cur, outCv);   // upscales the small dream onto the vd output canvas
+      } catch (e) {
+        if (cur) { try { cur.dispose(); } catch (err) {} cur = null; }
+        if (isGpuError(e) && !engineSwitched) {
+          // The dream engine died — drop it and carry on on WASM/CPU.
+          if (prev) { try { prev.dispose(); } catch (err) {} prev = null; }
+          if (styleT) { try { styleT.dispose(); } catch (err) {} styleT = null; }
+          setVideoStatus("The dream engine was lost — switching to a slower engine and carrying on…");
+          const nb = await switchVideoBackend();
+          if (!nb) { setVideoStatus("Video dream failed: the dream engine was lost and no fallback engine works.", true); break; }
+          engineSwitched = nb;
+          if (mode !== "frame") {
+            try { styleT = await makeStyleTexture(dd.w, dd.h); }
+            catch (err) { setVideoStatus("Video dream failed: could not re-dream the style photo on the fallback engine.", true); break; }
+          }
+          consecFail = 0;
+          continue;   // retry the same frame (i not advanced)
+        }
+        if (++consecFail >= 5) { setVideoStatus("Video dream failed: " + (e && e.message || e), true); break; }
+        setVideoStatus("Frame " + (i + 1) + " failed — skipping it…");
+        i++;
+        continue;
       }
-      if ($("videoZoom").value === "1") {   // zoom in a touch every frame, like the still dream
-        const zSpeed = parseFloat($("videoZoomSpeed").value) || 0.998;   // Zoom speed: how fast the video zooms
-        const z = zoomCrop(cur, zSpeed, 0, 0, 0); cur.dispose(); cur = z;
-      }
-      const steps = parseInt($("videoSteps").value, 10) || 2;
-      const pulseF = 1 + (parseFloat($("videoPulse").value) || 0) * Math.sin(i * 0.25);   // Pulse: the dream strength breathes, one full breath every ~25 frames
-      cur = dreamSteps(cur, settings.lr * pulseF, steps, true);
-      await tensorToCanvas(cur, outCv);
       if (detailOn) {
         // Upscale to 4K, then dream the 4K frame for real, tile by tile.
         const hx = hiCv.getContext("2d");
@@ -1940,7 +2004,11 @@ async function processVideo() {
       if (manualFrames) { vtrack.requestFrame(); await sleep(60); }   // let the recorder grab this frame before the next draw
       else await sleep(1000 / fps);
       await tf.nextFrame();
+      dreamed++;
+      consecFail = 0;
+      i++;
     }
+    videoDone = videoRunning && i >= total;
     if (videoRunning) { setVideoStatus("Closing on the original image…"); await holdRaw(); }
   } catch (e) {
     console.error(e);
@@ -1957,7 +2025,13 @@ async function processVideo() {
     videoOutUrl = URL.createObjectURL(videoOutBlob);
     $("vidOut").src = videoOutUrl;
     $("videoHint").textContent = "";
-    setVideoStatus("Done — " + total + " frames · " + (detailOn ? hiD.w + "×" + hiD.h + " true 4K" : vd.w + "×" + vd.h) + ". Watch it above, or save it.");
+    if (videoDone) {
+      const swNote = engineSwitched ? " · engine switched to " + (LABEL[engineSwitched] || engineSwitched) : "";
+      setVideoStatus("Done — " + dreamed + " of " + total + " frames · " + (detailOn ? hiD.w + "×" + hiD.h + " true 4K" : vd.w + "×" + vd.h) + swNote + ". Watch it above, or save it.");
+    } else if (dreamed > 0) {
+      setVideoStatus("Stopped — dreamed " + dreamed + " of " + total + " frames. The video above is only the part that finished.");
+    }
+    // else the failure message set in the loop stays — never claim Done for a run that dreamed almost nothing
   } else {
     videoOutBlob = null;
     $("videoHint").textContent = "Dreamed video plays here";
@@ -1983,7 +2057,8 @@ function initVideoTab() {
   $("videoWeave").addEventListener("input", () => { $("videoWeaveVal").textContent = (+$("videoWeave").value).toFixed(2); });
   $("videoStyleZoom").addEventListener("input", () => { $("videoStyleZoomVal").textContent = (+$("videoStyleZoom").value).toFixed(3); });
   $("videoStyleSteps").addEventListener("input", () => { $("videoStyleStepsVal").textContent = $("videoStyleSteps").value; });
-  $("videoZoomSpeed").addEventListener("input", () => { $("videoZoomSpeedVal").textContent = (+$("videoZoomSpeed").value).toFixed(3); });
+  $("videoZoomCycles").addEventListener("input", () => { $("videoZoomCyclesVal").textContent = $("videoZoomCycles").value; });
+  $("videoZoomAmount").addEventListener("input", () => { $("videoZoomAmountVal").textContent = (+$("videoZoomAmount").value).toFixed(2) + "×"; });
   $("videoHueSpin").addEventListener("input", () => { $("videoHueSpinVal").textContent = (+$("videoHueSpin").value).toFixed(1); });
   $("videoSaturation").addEventListener("input", () => { $("videoSaturationVal").textContent = (+$("videoSaturation").value).toFixed(2); });
   $("videoPulse").addEventListener("input", () => { $("videoPulseVal").textContent = (+$("videoPulse").value).toFixed(2); });
