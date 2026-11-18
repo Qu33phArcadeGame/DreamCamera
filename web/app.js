@@ -1704,6 +1704,13 @@ function initControls() {
 // (demuxMP4, below) reads the file's own sample table; it was verified
 // against Coby's real file (1080x2340 H.264, 317 frames, avc1.4d0033).
 //
+// v1.61: the decoder is no longer fatal on its first error — v1.60
+// stopped after 2 frames when the decoder died, and the post-loop
+// status overwrote the decoder-error message with a bare "Stopped",
+// so no error was ever shown. Now a decoder error recreates the
+// decoder and resumes from the last key frame (bounded to 3 recoveries),
+// bad samples are skipped instead of fed, and the status always names
+// why the run stopped (stopReason).
 // The hard-won fixes from the v1.50–v1.56 video saga are built in, not
 // patched on:
 //  - the dream runs at a capped 192 short side (v1.59, was 256) and is
@@ -2023,6 +2030,7 @@ async function generateVideo() {
   let rec = null, done = null, prev = null, mime = null, vtrack = null, manualFrames = false;
   let dreamed = 0, skipped = 0, engineSwitched = null, videoDone = false;
   let decoder = null, held = null, heldTsUs = -1, decodedFrames = 0, reusedFrames = 0;
+  let stopReason = null, decoderRecoveries = 0, badSamples = 0;   // v1.61: stopReason is WHY the run stopped — the post-loop status must never hide it again (v1.60 overwrote the decoder-error message with a bare "Stopped")
   try {
     const dur = demux.duration;
     const fps = parseInt($("videoFps").value, 10) || 12;
@@ -2068,14 +2076,45 @@ async function generateVideo() {
     const samples = demux.samples;
     let sampleIdx = 0, pending = [], waiter = null, decoderDone = false, decoderError = null, flushStarted = false;
     const wake = () => { if (waiter) { const w = waiter; waiter = null; w(); } };
-    decoder = new VideoDecoder({
-      output: (frame) => { decodedFrames++; pending.push(frame); wake(); },
-      error: (e) => { decoderError = e; wake(); },
-    });
-    try {
-      decoder.configure({ codec: demux.codec, description: demux.description, codedWidth: demux.width, codedHeight: demux.height, optimizeForLatency: true });
-    } catch (e) {
-      setVideoStatus("This device can't decode that video (" + (e && e.message || e) + ") — try an MP4 (H.264) file.", true);
+    // Make (and configure) a fresh VideoDecoder. Returns true on success.
+    // Used once at the start and again after a decoder error, so one bad
+    // chunk or decoder hiccup does not kill the whole run (v1.61: v1.60
+    // died after 2 frames on the first decoder error, with no recovery).
+    function startDecoder() {
+      try {
+        decoder = new VideoDecoder({
+          output: (frame) => { decodedFrames++; pending.push(frame); wake(); },
+          error: (e) => { decoderError = e; wake(); },
+        });
+        decoder.configure({ codec: demux.codec, description: demux.description, codedWidth: demux.width, codedHeight: demux.height, optimizeForLatency: true });
+        return true;
+      } catch (e) { decoderError = e; return false; }
+    }
+    // A decoder error must not kill the run: close the failed decoder,
+    // make a fresh one, and resume feeding from the key frame with the
+    // largest presentation time at or before the target (delta frames
+    // after it need that key). The existing nextTargetFrame discards
+    // frames before the target, so the run picks up at the right place.
+    // Bounded: after 3 recoveries the file/decoder is fundamentally
+    // broken and the run fails with a clear reason instead of looping.
+    function recoverDecoder(targetUs) {
+      if (decoderRecoveries >= 3) return false;
+      decoderRecoveries++;
+      try { if (decoder) decoder.close(); } catch (e) {}
+      decoder = null;
+      for (const f of pending) { try { f.close(); } catch (e) {} }
+      pending.length = 0;
+      if (held) { try { held.close(); } catch (e) {} held = null; heldTsUs = -1; }
+      waiter = null; decoderDone = false; decoderError = null; flushStarted = false;
+      let resumeIdx = 0, bestCts = -1;
+      for (let k = 0; k < samples.length; k++) {
+        if (samples[k].key && samples[k].ctsUs <= targetUs && samples[k].ctsUs > bestCts) { resumeIdx = k; bestCts = samples[k].ctsUs; }
+      }
+      sampleIdx = resumeIdx;
+      return startDecoder();
+    }
+    if (!startDecoder()) {
+      setVideoStatus("This device can't decode that video (" + (decoderError && decoderError.message || decoderError) + ") — try an MP4 (H.264) file.", true);
       return;
     }
     const feedSome = () => {
@@ -2083,6 +2122,10 @@ async function generateVideo() {
       try {
         while (sampleIdx < samples.length && decoder.decodeQueueSize < 8) {
           const s = samples[sampleIdx++];
+          // Never feed a sample whose bytes are outside the file — a bad
+          // offset/size would hand the decoder garbage and kill the run.
+          // Skip it (counted) instead of erroring the decoder.
+          if (!(s.size > 0) || s.offset < 0 || s.offset + s.size > fileBuf.byteLength) { badSamples++; continue; }
           decoder.decode(new EncodedVideoChunk({ type: s.key ? "key" : "delta", timestamp: s.ctsUs, duration: s.durUs, data: new Uint8Array(fileBuf, s.offset, s.size) }));
         }
       } catch (e) { decoderError = decoderError || e; wake(); }
@@ -2179,8 +2222,21 @@ async function generateVideo() {
         const got = await nextTargetFrame(Math.round(targetT * 1e6));
         if (!got) {
           // No frame for this target: the decoder is exhausted or errored.
-          if (decoderError) { setVideoStatus("Video dream failed: the video decoder stopped (" + (decoderError && decoderError.message || decoderError) + ").", true); break; }
-          if (++consecFail >= 5) { setVideoStatus("Video dream failed: no frame for target " + targetT.toFixed(2) + "s at frame " + (i + 1) + " — try a different file.", true); break; }
+          if (decoderError) {
+            // The decoder died — recover it and retry this frame instead
+            // of killing the run. One decoder hiccup must not stop a
+            // 749-frame run (v1.60 died after 2 frames this way).
+            const errMsg = decoderError && decoderError.message || decoderError;
+            if (recoverDecoder(Math.round(targetT * 1e6))) {
+              setVideoStatus("The video decoder hiccuped (" + errMsg + ") — recovering and carrying on…");
+              consecFail = 0;
+              continue;   // retry the same frame target with the fresh decoder
+            }
+            stopReason = "Video dream failed: the video decoder stopped (" + errMsg + ") and could not recover";
+            setVideoStatus(stopReason, true);
+            break;
+          }
+          if (++consecFail >= 5) { stopReason = "Video dream failed: no frame for target " + targetT.toFixed(2) + "s at frame " + (i + 1) + " — try a different file."; setVideoStatus(stopReason, true); break; }
           setVideoStatus("Frame " + (i + 1) + " has no decoded frame (target " + targetT.toFixed(2) + "s) — skipping it…");
           skipped++; i++; continue;
         }
@@ -2245,9 +2301,9 @@ async function generateVideo() {
             break;   // non-GPU error, or a GPU error after the switch: no more attempts for this frame
           }
         }
-        if (abortMsg) { setVideoStatus(abortMsg, true); break; }
+        if (abortMsg) { stopReason = abortMsg; setVideoStatus(stopReason, true); break; }
         if (!frameOk) {
-          if (++consecFail >= 5) { setVideoStatus("Video dream failed: " + (frameErr && frameErr.message || frameErr) + " (frame " + (i + 1) + ")", true); break; }
+          if (++consecFail >= 5) { stopReason = "Video dream failed: " + (frameErr && frameErr.message || frameErr) + " (frame " + (i + 1) + ")"; setVideoStatus(stopReason, true); break; }
           setVideoStatus("Frame " + (i + 1) + " failed — skipping it…");
           await showRawFrame(frame);
           skipped++; i++; continue;
@@ -2289,8 +2345,17 @@ async function generateVideo() {
       const fmt = (videoOutBlob.type || "").indexOf("mp4") >= 0 ? "MP4" : "WebM";
       if (videoDone) {
         const swNote = engineSwitched ? " · engine switched to " + (LABEL[engineSwitched] || engineSwitched) : "";
-        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · " + vModel.label + " · " + fmt + swNote + ". Watch it above, or save it.");
+        const recNote = decoderRecoveries ? " · decoder recovered " + decoderRecoveries + "×" : "";
+        const badNote = badSamples ? " · " + badSamples + " bad samples skipped" : "";
+        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + ". Watch it above, or save it.");
+      } else if (stopReason) {
+        // A failure stopped the run — the reason MUST be shown. Never
+        // overwrite it with the bare "Stopped" line (v1.60 hid the
+        // decoder error this way: it dreamed 2 frames, the decoder died,
+        // and the status just said "Stopped — dreamed 2 of 749 frames").
+        setVideoStatus(stopReason + " — dreamed " + dreamed + " of " + total + " frames. The video above is only the part that finished.", true);
       } else if (dreamed > 0) {
+        // No failure — the user pressed stop.
         setVideoStatus("Stopped — dreamed " + dreamed + " of " + total + " frames. The video above is only the part that finished.");
       }
       // else the failure message set in the loop stays — never claim Done for a run that dreamed almost nothing
