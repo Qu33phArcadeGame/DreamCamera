@@ -1780,10 +1780,22 @@ function updateVideoUI() {
 let savedPhotoLayers = null;
 async function activateVideoModel() {
   const key = videoModelKey();
-  if (MODEL.short !== key) {
-    savedPhotoLayers = (settings.layers || []).slice();
-    MODEL = MODELS[key]; P = PRE[MODEL.pre];
-    settings.layers = MODEL.pref.slice();
+  // The video run uses the fastest working engine (WebGPU first), not
+  // whatever engine the Photos tab happens to be on — a Photos session
+  // left on WASM/CPU would otherwise make the whole video run at that
+  // slow pace (v1.57 ran ~6s a frame). Reload the model only if the model
+  // or the engine changes.
+  if (!engineOrder.length) await benchEngines();
+  const best = engineOrder[0];
+  const curB = (typeof tf !== "undefined" && tf.getBackend) ? tf.getBackend() : null;
+  const modelChanged = MODEL.short !== key;
+  const engineChanged = !!(best && curB && curB !== best);
+  if (modelChanged || engineChanged) {
+    if (savedPhotoLayers == null) savedPhotoLayers = (settings.layers || []).slice();
+    if (modelChanged) {
+      MODEL = MODELS[key]; P = PRE[MODEL.pre];
+      settings.layers = MODEL.pref.slice();
+    }
     ready = false; model = null; midModel = null; grads = {};
   }
   return await ensureReady();
@@ -1820,6 +1832,61 @@ function seekTo(v, t) {
     try { v.currentTime = t; } catch (e) { finish(false); return; }
     setTimeout(() => finish(Math.abs(v.currentTime - t) < 0.05), 8000);
   });
+}
+// Seek to t AND wait until a frame AT t has actually been presented — only
+// then is drawImage guaranteed to return the frame at t. The `seeked` event
+// alone is NOT enough in the Android WebView: it can fire (and currentTime
+// can read back at t) while drawImage still returns the previous frame, so
+// the run dreams the same intro frame forever while the frame counter
+// advances — exactly what v1.57 did (frame 228 still the intro at 14.25s).
+// requestVideoFrameCallback fires only when a frame is presented, and
+// metadata.mediaTime says which time that frame is — so we know the drawn
+// frame is the one we asked for. Returns the presented frame's mediaTime
+// (seconds into the video), or null if no frame at t arrived. A null is a
+// failed seek: the caller skips the frame, it never draws a stale one.
+// rVFC state: if it times out 3 frames in a row the WebView is not
+// presenting frames for this element — stop waiting for it (it would add
+// 800ms a frame) and fall back to the playhead for the rest of the run.
+let videoRVFCBroken = false, videoRVFCTimeouts = 0;
+async function seekFrame(v, t) {
+  const TOL = 0.05;
+  if (Math.abs(v.currentTime - t) < TOL) return v.currentTime;
+  // Register for presented frames BEFORE seeking: rVFC fires only for
+  // frames presented after registration, so registering after the seek
+  // would miss the frame (a paused video presents no further frames).
+  let cancelled = false, rVFCReady = null;
+  if (!videoRVFCBroken && typeof v.requestVideoFrameCallback === "function") {
+    rVFCReady = new Promise(res => {
+      const onFrame = (now, meta) => {
+        if (cancelled) return;
+        const mt = meta && typeof meta.mediaTime === "number" ? meta.mediaTime : v.currentTime;
+        if (Math.abs(mt - t) <= TOL) { videoRVFCTimeouts = 0; res(mt); }
+        else {
+          // Stale presented frame — keep waiting for the next one.
+          try { v.requestVideoFrameCallback(onFrame); } catch (e) { res(null); }
+        }
+      };
+      try { v.requestVideoFrameCallback(onFrame); }
+      catch (e) { res(null); }
+    });
+  }
+  // Land the playhead (the proven seekTo). If it never gets there, fail.
+  if (!await seekTo(v, t)) { cancelled = true; return null; }
+  if (rVFCReady) {
+    const mt = await Promise.race([
+      rVFCReady,
+      new Promise(res => setTimeout(() => { cancelled = true; res(null); }, 800))
+    ]);
+    if (mt != null) return mt;
+    // rVFC did not confirm a frame at t. Count it; three in a row means
+    // this WebView is not presenting frames for the element — stop waiting.
+    if (++videoRVFCTimeouts >= 3) videoRVFCBroken = true;
+  }
+  // Fall back to the playhead: if it is at t, proceed (the old behaviour).
+  // The status diagnostic shows the real source time, so a stale frame
+  // here is visible, not silent.
+  if (Math.abs(v.currentTime - t) < TOL) return v.currentTime;
+  return null;
 }
 // A lost WebGPU device kills every frame after it — the old code just
 // reported "Video dream failed" and stopped. Instead, drop the dead
@@ -1942,7 +2009,14 @@ async function generateVideo() {
       if (manualFrames) { vtrack.requestFrame(); await sleep(60); }
       else await sleep(1000 / fps);
     }
-    let i = 0, consecFail = 0;
+    let i = 0, consecFail = 0, curSrcTime = null;
+    videoRVFCBroken = false; videoRVFCTimeouts = 0;
+    // Status helpers. The source time is the ACTUAL time in the video of
+    // the frame being dreamed (from the presented frame, not the target) —
+    // so the frame number and the video time can be seen to agree. The
+    // engine is always shown, so a slow run names its engine.
+    const engLabel = () => { try { const b = tf.getBackend(); return b ? " · engine: " + (LABEL[b] || b) : ""; } catch (e) { return ""; } };
+    const srcTimeNote = () => (curSrcTime != null ? " · " + curSrcTime.toFixed(1) + "s in the video" : "");
     // The frame loop: every frame either dreams and advances, or fails
     // cleanly. A frame gets at most two attempts — the first, and one
     // retry after a one-time backend switch. EVERY failure counts (seek,
@@ -1959,20 +2033,27 @@ async function generateVideo() {
         const cur = $("videoStatus").textContent || "";
         if (cur.indexOf("Dreaming video…") !== 0) return;
         const s = Math.round((performance.now() - frameT0) / 1000);
-        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + " · " + s + "s on this frame" + (engineSwitched ? " · engine: " + (LABEL[engineSwitched] || engineSwitched) : ""));
+        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + " · " + s + "s on this frame" + engLabel());
       }, 2000);
       try {
-        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + (engineSwitched ? " · engine: " + (LABEL[engineSwitched] || engineSwitched) : ""));
-        const seeked = await seekTo(src, Math.min(i / fps, Math.max(0, dur - 0.001)));
-        if (!seeked) {
+        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel());
+        const targetT = Math.min(i / fps, Math.max(0, dur - 0.001));
+        // seekFrame waits until a frame AT targetT has actually been
+        // presented — drawImage then draws that frame, not a stale one.
+        const presentedT = await seekFrame(src, targetT);
+        curSrcTime = presentedT;   // the actual video time of the frame about to be dreamed
+        if (presentedT == null) {
           // A bad seek is a frame failure, not a dead run: count it and
           // skip the frame. Five in a row means the file really cannot
           // seek, and the run ends with a clear message.
-          if (++consecFail >= 5) { setVideoStatus("Video dream failed: the video stopped seeking at frame " + (i + 1) + " — try a different file.", true); break; }
-          setVideoStatus("Frame " + (i + 1) + " would not seek — skipping it…");
+          if (++consecFail >= 5) { setVideoStatus("Video dream failed: the video stopped seeking at frame " + (i + 1) + " (target " + targetT.toFixed(2) + "s) — try a different file.", true); break; }
+          setVideoStatus("Frame " + (i + 1) + " would not seek (target " + targetT.toFixed(2) + "s) — skipping it…");
           await showRawFrame();
           skipped++; i++; continue;
         }
+        // The frame is confirmed at presentedT — show the frame number and
+        // the real video time together, so the run's position is never a mystery.
+        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel());
         dreamCv.getContext("2d").drawImage(src, 0, 0, dd.w, dd.h);   // dream small; the output stays vd
         let cur = null, frameOk = false, frameErr = null, abortMsg = null;
         for (let attempt = 0; attempt < 2 && !frameOk && videoRunning; attempt++) {
@@ -2022,7 +2103,7 @@ async function generateVideo() {
               dreamCv.getContext("2d").drawImage(src, 0, 0, dd.w, dd.h);   // re-draw at the new size (resizing clears the canvas)
               // Back to a "Dreaming video…" status so the per-frame timer
               // resumes updating it (it leaves switch/skip/fail messages alone).
-              setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + " · engine: " + (LABEL[nb] || nb));
+              setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + " · engine: " + (LABEL[nb] || nb));
               continue;   // retry the same frame once, on the new engine
             }
             break;   // non-GPU error, or a GPU error after the switch: no more attempts for this frame
@@ -2043,7 +2124,7 @@ async function generateVideo() {
         pv.getContext("2d").drawImage(outCv, 0, 0, pv.width, pv.height);   // live preview: the new frame, in order
         if (prev) prev.dispose();
         prev = cur;
-        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + (engineSwitched ? " · engine: " + (LABEL[engineSwitched] || engineSwitched) : ""));
+        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel());
         setVideoBar((i + 1) / total);
         if (manualFrames) { vtrack.requestFrame(); await sleep(60); }   // let the recorder grab this frame before the next draw
         else await sleep(1000 / fps);
