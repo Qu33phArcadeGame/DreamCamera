@@ -1691,14 +1691,24 @@ function initControls() {
 // put the frames back together as an MP4. No modes, no presets, no style
 // photo — the generator is the whole tab.
 //
+// v1.60: frames come from WebCodecs VideoDecoder, not a <video> element.
+// Seeking is GONE — seekTo/seekFrame/rVFC were removed, not tweaked.
+// The v1.57–v1.59 saga proved the <video> path cannot be trusted on this
+// device: the playhead reads at the target while drawImage returns the
+// previous frame (v1.57/1.58), and requestVideoFrameCallback never fires
+// for the element even when it is visible to the compositor (v1.59:
+// every frame "fallback", intro logo still at 2.1s). VideoDecoder hands
+// us decoded VideoFrames with exact timestamps — no <video>, no
+// compositor, no seeking, no rVFC — so a stale frame is impossible: a
+// frame IS the decoded data at its time. A minimal MP4 demuxer
+// (demuxMP4, below) reads the file's own sample table; it was verified
+// against Coby's real file (1080x2340 H.264, 317 frames, avc1.4d0033).
+//
 // The hard-won fixes from the v1.50–v1.56 video saga are built in, not
 // patched on:
-//  - seekTo never fails on a no-op seek and re-checks the position on
-//    timeout; the decoder is primed (hidden play/pause) so the first
-//    seek lands; a bad seek skips that frame (raw frame shown) and never
-//    kills the run.
-//  - the dream runs at a capped 256 short side and is upscaled onto the
-//    output canvas, so the output keeps the source dimensions.
+//  - the dream runs at a capped 192 short side (v1.59, was 256) and is
+//    upscaled onto the output canvas, so the output keeps the source
+//    dimensions. 192 is 1.83x faster than 256 and the dream stays visible.
 //  - carryover: half of the previous dreamed frame is blended into the
 //    next, so the dream builds up and is visible (one isolated frame
 //    changes ~0.01% and looks raw).
@@ -1707,10 +1717,10 @@ function initControls() {
 //    frame, and says so. Five consecutive failures of any kind end it.
 //  - live preview: the first frame shows immediately; each dreamed frame
 //    is drawn as it is made; a skipped frame shows its raw frame.
-//  - honest status: frame X of total + seconds on the frame + engine
-//    note; the end status reports the actual dreamed count, never the
-//    planned total.
-let videoSrc = null, videoMeta = null;
+//  - honest status: frame X of total + seconds in the video + seconds on
+//    the frame + engine note; the end status reports the actual dreamed
+//    count, never the planned total.
+let videoSrc = null, videoMeta = null, videoFile = null;
 let videoRunning = false, videoOutBlob = null, videoOutUrl = null, videoOutMime = null;
 function setVideoStatus(t, err) { const el = $("videoStatus"); el.textContent = t; el.style.color = err ? "#ff7b7b" : "#7df9ff"; }
 function setVideoBar(p) { const b = $("videoBar"); if (p == null) { b.style.visibility = "hidden"; return; } b.style.visibility = "visible"; b.firstChild.style.width = Math.round(Math.max(0, Math.min(1, p)) * 100) + "%"; }
@@ -1818,105 +1828,147 @@ function restorePhotoModel() {
   saveSettings();   // persist the Photos layers again, so a save during the run cannot leave the video model's layers stored
   buildModelSelect(); buildLayers(); buildPresets(); updateUI();
 }
-// Seek with a timeout — and never fail on a no-op. A seek to the
-// playhead's current position (frame 0 seeks to t=0, which is where the
-// video already is) may never fire `seeked` in the Android WebView, so
-// the old code waited the full 8s and reported the video as unseekable —
-// the run died at frame 0 with zero dreamed frames and no preview. If
-// the playhead is already at the target (within a frame), the frame is
-// already there: succeed at once. On timeout, re-check the position:
-// if it landed, succeed anyway.
-function seekTo(v, t) {
-  return new Promise(res => {
-    let done = false;
-    const finish = ok => { if (!done) { done = true; res(ok); } };
-    if (Math.abs(v.currentTime - t) < 0.05) { finish(true); return; }
-    v.onseeked = () => finish(true);
-    v.onerror = () => finish(false);
-    try { v.currentTime = t; } catch (e) { finish(false); return; }
-    setTimeout(() => finish(Math.abs(v.currentTime - t) < 0.05), 8000);
-  });
-}
-// Seek to t AND wait until a frame AT t has actually been presented — only
-// then is drawImage guaranteed to return the frame at t. The `seeked` event
-// alone is NOT enough in the Android WebView: it can fire (and currentTime
-// can read back at t) while drawImage still returns the previous frame, so
-// the run dreams the same intro frame forever while the frame counter
-// advances — exactly what v1.57 did (frame 228 still the intro at 14.25s).
-// requestVideoFrameCallback fires only when a frame is presented, and
-// metadata.mediaTime says which time that frame is — so we know the drawn
-// frame is the one we asked for. Returns the presented frame's mediaTime
-// (seconds into the video), or null if no frame at t arrived. A null is a
-// failed seek: the caller skips the frame, it never draws a stale one.
-// rVFC state: if it times out 3 frames in a row the WebView is not
-// presenting frames for this element — stop waiting for it (it would add
-// 3s a frame) and fall back to the playhead for the rest of the run.
-// v1.59: the element must actually be PRESENTED for rVFC to fire at all —
-// v1.58 hid it (opacity:0, z-index:-1) so rVFC never fired and every seek
-// fell back to the playhead, which reads at the target while drawImage
-// still returns the previous frame (the intro logo at 1.5s). The timeout
-// is 3s, not 800ms: a high-res seek can take over a second to decode and
-// present. The carryover is NOT the cause — proven against the real model
-// and the real frames, the logo washes out by frame 26 at weave 0.5 and
-// 0.25 alike when the source frames are correct.
-let videoRVFCBroken = false, videoRVFCTimeouts = 0;
-// Whether the last seekFrame result was confirmed by a presented frame
-// (rVFC) or fell back to the playhead, and how many fallbacks this run
-// has had. The playhead can read at the target while drawImage still
-// returns the previous frame (the v1.58 logo bug — status said 1.5s but
-// the preview showed the intro), so a fallback is a stale-frame risk,
-// not a confirmation. The status shows it per frame; the end status
-// counts them.
-let videoLastSeekConfirmed = true, videoRVFCFallbacks = 0;
-async function seekFrame(v, t) {
-  const TOL = 0.05;
-  if (Math.abs(v.currentTime - t) < TOL) { videoLastSeekConfirmed = true; return v.currentTime; }
-  // Register for presented frames BEFORE seeking: rVFC fires only for
-  // frames presented after registration, so registering after the seek
-  // would miss the frame (a paused video presents no further frames).
-  let cancelled = false, rVFCReady = null;
-  if (!videoRVFCBroken && typeof v.requestVideoFrameCallback === "function") {
-    rVFCReady = new Promise(res => {
-      const onFrame = (now, meta) => {
-        if (cancelled) return;
-        const mt = meta && typeof meta.mediaTime === "number" ? meta.mediaTime : v.currentTime;
-        if (Math.abs(mt - t) <= TOL) { videoRVFCTimeouts = 0; res(mt); }
-        else {
-          // Stale presented frame — keep waiting for the next one.
-          try { v.requestVideoFrameCallback(onFrame); } catch (e) { res(null); }
-        }
-      };
-      try { v.requestVideoFrameCallback(onFrame); }
-      catch (e) { res(null); }
-    });
+// Minimal MP4 demuxer (v1.60) — reads the file's own sample table so
+// VideoDecoder can be fed exact H.264 samples. No <video>, no seeking.
+// Handles: 32/64-bit box sizes, moov before or after mdat, stco/co64,
+// stsc/stsz/stts/ctts (v0 + v1)/stss, uniform + per-sample sizes.
+// Throws on: no moov (fragmented MP4), no video track, not H.264, no
+// avcC. Returns { duration (s), width, height, codec ("avc1.xxxxxx"),
+// description (Uint8Array, the avcC record), samples: [{ offset, size,
+// ctsUs, durUs, key }] } in file (decode) order. Verified against Coby's
+// real file (1080x2340 H.264, 317 frames): duration 4.5662s, codec
+// avc1.4d0033, 317 samples, cts==dts (no B-frames), all sample offsets in
+// bounds, NAL lengths consistent, every target at 8/12/16 fps covered.
+function demuxMP4(ab) {
+  const buf = new Uint8Array(ab);
+  const dv = new DataView(ab);
+  function boxes(start, end) {
+    const out = [];
+    let off = start;
+    while (off + 8 <= end) {
+      let size = dv.getUint32(off);
+      const type = String.fromCharCode(buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]);
+      let hdr = 8;
+      if (size === 1) { size = Number(dv.getBigUint64(off + 8)); hdr = 16; }
+      else if (size === 0) { size = end - off; }
+      if (size < hdr || off + size > end) throw new Error("bad MP4 box " + type);
+      out.push({ type, payload: off + hdr, end: off + size });
+      off += size;
+    }
+    return out;
   }
-  // Land the playhead (the proven seekTo). If it never gets there, fail.
-  if (!await seekTo(v, t)) { cancelled = true; return null; }
-  if (rVFCReady) {
-    const mt = await Promise.race([
-      rVFCReady,
-      // 3s, not 800ms: a high-res seek can take over a second to decode
-      // and present, and falling back early is what drew the stale intro
-      // in v1.58. The 3-timeout disable below still bounds the cost if
-      // rVFC is truly broken.
-      new Promise(res => setTimeout(() => { cancelled = true; res(null); }, 3000))
-    ]);
-    if (mt != null) { videoLastSeekConfirmed = true; return mt; }
-    // rVFC did not confirm a frame at t. Count it; three in a row means
-    // this WebView is not presenting frames for the element — stop waiting.
-    if (++videoRVFCTimeouts >= 3) videoRVFCBroken = true;
+  const find = (list, type) => list.find(b => b.type === type);
+  const moov = find(boxes(0, buf.length), "moov");
+  if (!moov) throw new Error("no moov box — this file looks like a fragmented MP4, which is not supported");
+  let video = null;
+  for (const trak of boxes(moov.payload, moov.end).filter(b => b.type === "trak")) {
+    const mdia = find(boxes(trak.payload, trak.end), "mdia");
+    if (!mdia) continue;
+    const mdiaBoxes = boxes(mdia.payload, mdia.end);
+    const hdlr = find(mdiaBoxes, "hdlr");
+    if (!hdlr) continue;
+    const handler = String.fromCharCode(buf[hdlr.payload + 8], buf[hdlr.payload + 9], buf[hdlr.payload + 10], buf[hdlr.payload + 11]);
+    if (handler !== "vide") continue;
+    const mdhd = find(mdiaBoxes, "mdhd");
+    const minf = find(mdiaBoxes, "minf");
+    const stbl = find(boxes(minf.payload, minf.end), "stbl");
+    const st = {};
+    for (const b of boxes(stbl.payload, stbl.end)) st[b.type] = b;
+    video = { mdhd, st };
+    break;
   }
-  // Fall back to the playhead: if it is at t, proceed — but this is NOT
-  // a confirmation. currentTime can read at t while drawImage still
-  // returns the previous frame (the v1.58 logo bug), so count the
-  // fallback and show it in the status; the end status totals them.
-  if (Math.abs(v.currentTime - t) < TOL) { videoLastSeekConfirmed = false; videoRVFCFallbacks++; return v.currentTime; }
-  return null;
+  if (!video) throw new Error("no video track in this file");
+  const st = video.st;
+  const timescale = dv.getUint32(video.mdhd.payload + 12);
+  if (!timescale) throw new Error("bad video timescale");
+  // stsd -> avc1 -> avcC
+  if (!st.stsd) throw new Error("no sample description (stsd)");
+  const avc1 = find(boxes(st.stsd.payload + 8, st.stsd.end), "avc1");
+  if (!avc1) throw new Error("not H.264 (no avc1 sample entry)");
+  const width = dv.getUint16(avc1.payload + 24);
+  const height = dv.getUint16(avc1.payload + 26);
+  const avcC = find(boxes(avc1.payload + 78, avc1.end), "avcC");
+  if (!avcC) throw new Error("no H.264 config (avcC)");
+  const description = new Uint8Array(buf.subarray(avcC.payload, avcC.end));
+  const hex = n => n.toString(16).padStart(2, "0");
+  const codec = "avc1." + hex(description[1]) + hex(description[2]) + hex(description[3]);
+  // stts -> per-sample decode timestamps + durations
+  if (!st.stts) throw new Error("no time-to-sample table (stts)");
+  const dts = [], dur = [];
+  let t = 0;
+  const sttsCount = dv.getUint32(st.stts.payload + 4);
+  for (let k = 0; k < sttsCount; k++) {
+    const count = dv.getUint32(st.stts.payload + 8 + k * 8);
+    const delta = dv.getUint32(st.stts.payload + 12 + k * 8);
+    for (let j = 0; j < count; j++) { dts.push(t); dur.push(delta); t += delta; }
+  }
+  const sampleCount = dts.length;
+  if (!sampleCount) throw new Error("no video samples in this file");
+  // ctts -> composition offsets (absent when there are no B-frames)
+  const cto = new Array(sampleCount).fill(0);
+  if (st.ctts) {
+    const ver = buf[st.ctts.payload];
+    const cnt = dv.getUint32(st.ctts.payload + 4);
+    let k = 0;
+    for (let i = 0; i < cnt; i++) {
+      const count = dv.getUint32(st.ctts.payload + 8 + i * 8);
+      const off = ver === 1 ? dv.getInt32(st.ctts.payload + 12 + i * 8) : dv.getUint32(st.ctts.payload + 12 + i * 8);
+      for (let j = 0; j < count && k < sampleCount; j++) cto[k++] = off;
+    }
+  }
+  // stss -> sync (key) samples, 1-based; absent means every sample is a key
+  let sync = null;
+  if (st.stss) {
+    sync = new Set();
+    const cnt = dv.getUint32(st.stss.payload + 4);
+    for (let i = 0; i < cnt; i++) sync.add(dv.getUint32(st.stss.payload + 8 + i * 4));
+  }
+  // stsz -> sample sizes
+  if (!st.stsz) throw new Error("no sample sizes (stsz)");
+  const uniformSize = dv.getUint32(st.stsz.payload + 4);
+  const sizes = new Array(sampleCount);
+  if (uniformSize) sizes.fill(uniformSize);
+  else for (let i = 0; i < sampleCount; i++) sizes[i] = dv.getUint32(st.stsz.payload + 12 + i * 4);
+  // stsc -> samples per chunk
+  if (!st.stsc) throw new Error("no sample-to-chunk table (stsc)");
+  const scCount = dv.getUint32(st.stsc.payload + 4);
+  const scEntries = [];
+  for (let i = 0; i < scCount; i++) scEntries.push({ firstChunk: dv.getUint32(st.stsc.payload + 8 + i * 12), perChunk: dv.getUint32(st.stsc.payload + 12 + i * 12) });
+  // stco / co64 -> chunk offsets
+  let chunkOffsets = [];
+  if (st.co64) {
+    const cnt = dv.getUint32(st.co64.payload + 4);
+    for (let i = 0; i < cnt; i++) chunkOffsets.push(Number(dv.getBigUint64(st.co64.payload + 8 + i * 8)));
+  } else if (st.stco) {
+    const cnt = dv.getUint32(st.stco.payload + 4);
+    for (let i = 0; i < cnt; i++) chunkOffsets.push(dv.getUint32(st.stco.payload + 8 + i * 4));
+  } else throw new Error("no chunk offsets (stco/co64)");
+  // sample table in file (decode) order
+  const samples = [];
+  let sIdx = 0;
+  for (let c = 0; c < chunkOffsets.length && sIdx < sampleCount; c++) {
+    const chunkNo = c + 1;
+    let per = 1;
+    for (const e of scEntries) if (e.firstChunk <= chunkNo) per = e.perChunk;
+    let off = chunkOffsets[c];
+    for (let j = 0; j < per && sIdx < sampleCount; j++, sIdx++) {
+      samples.push({
+        offset: off, size: sizes[sIdx],
+        ctsUs: Math.round((dts[sIdx] + cto[sIdx]) * 1e6 / timescale),
+        durUs: Math.round(dur[sIdx] * 1e6 / timescale),
+        key: sync ? sync.has(sIdx + 1) : true,
+      });
+      off += sizes[sIdx];
+    }
+  }
+  if (!samples.length) throw new Error("no video samples in this file");
+  const last = samples[samples.length - 1];
+  const duration = (last.ctsUs + last.durUs) / 1e6;
+  return { duration, width, height, codec, description, samples };
 }
 // A lost WebGPU device kills every frame after it — the old code just
 // reported "Video dream failed" and stopped. Instead, drop the dead
-// backend and carry on on WASM/CPU, retrying the same frame. (No
-// play-forward seeking here — seeks stay the plain seekTo from v1.50.)
+// backend and carry on on WASM/CPU, retrying the same frame.
 function isGpuError(e) {
   const m = String((e && e.message) || e || "").toLowerCase();
   return (m.includes("device") && m.includes("lost")) || m.includes("mapasync") || m.includes("gpubuffer") || m.includes("context lost") || m.includes("out of memory") || m.includes("allocation failed");
@@ -1948,48 +2000,34 @@ async function generateVideo() {
   const vModel = MODELS[videoModelKey()] || MODELS.v1;
   setVideoStatus("Loading " + vModel.label + "…");
   if (!await activateVideoModel()) { setVideoStatus("Could not load " + vModel.label + " — try another model.", true); restorePhotoModel(); return; }
+  // v1.60: frames come from WebCodecs VideoDecoder, not a <video> element.
+  // Seeking/rVFC is proven broken on this device (v1.59: every seek fell
+  // back to the playhead and drew the intro frame at 2.1s), so there is no
+  // seek path at all in this function — no seekTo, no seekFrame, no
+  // <video>, no rVFC. If this device has no VideoDecoder, the run fails
+  // with a clear message instead of dreaming stale frames.
+  if (typeof VideoDecoder !== "function") {
+    setVideoStatus("This device can't decode video this way (WebCodecs VideoDecoder is missing) — try updating the app / WebView.", true);
+    restorePhotoModel(); return;
+  }
+  let fileBuf = null;
+  try {
+    if (videoFile) fileBuf = await videoFile.arrayBuffer();
+    else if (videoSrc) fileBuf = await (await fetch(videoSrc)).arrayBuffer();
+  } catch (e) { fileBuf = null; }
+  if (!fileBuf || !fileBuf.byteLength) { setVideoStatus("Could not read that video file.", true); restorePhotoModel(); return; }
+  let demux;
+  try { demux = demuxMP4(fileBuf); }
+  catch (e) { setVideoStatus("Could not read that video: " + (e && e.message || e) + ". Try an MP4 (H.264) file.", true); restorePhotoModel(); return; }
   videoRunning = true; updateVideoUI();
-  const src = document.createElement("video");
-  src.muted = true; src.playsInline = true; src.preload = "auto"; src.src = videoSrc;
   let rec = null, done = null, prev = null, mime = null, vtrack = null, manualFrames = false;
   let dreamed = 0, skipped = 0, engineSwitched = null, videoDone = false;
+  let decoder = null, held = null, heldTsUs = -1, decodedFrames = 0, reusedFrames = 0;
   try {
-    try { await new Promise((res, rej) => { src.onloadedmetadata = res; src.onerror = () => rej(new Error("could not read that video")); }); }
-    catch (e) { setVideoStatus("Could not read that video.", true); return; }
-    // Prime the video so seeks have data to land on: wait for the first
-    // frame to be readable (bounded — a video that never primes is reported,
-    // not hung on). Without this the first seek could stall forever.
-    await new Promise(res => {
-      let done = false;
-      const finish = () => { if (!done) { done = true; res(); } };
-      src.oncanplay = finish; src.onloadeddata = finish; src.onerror = finish;
-      try { src.load(); } catch (e) { finish(); }
-      setTimeout(finish, 8000);
-    });
-    // Prime the decoder: a video element that has never played and is not
-    // in the DOM may never land its first seek in the WebView. Attach it
-    // and play it muted briefly (bounded), then pause — after this, seeks
-    // land. If the prime fails, carry on anyway: the robust seekTo above
-    // still works. (Muted, 2px; removed when the run ends.)
-    // The element must be PRESENTED for requestVideoFrameCallback to fire:
-    // opacity:0 + z-index:-1 (v1.58) meant the compositor never presented
-    // a frame for it, so every seek fell back to the playhead and drew a
-    // stale frame (the intro logo at 1.5s). It stays 2px at the corner,
-    // so it is invisible to the user, but it is now an opaque layer the
-    // compositor presents.
-    src.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:1;pointer-events:none;z-index:0";
-    document.body.appendChild(src);
-    try {
-      const playP = src.play();
-      if (playP && playP.catch) playP.catch(() => {});
-      await Promise.race([new Promise(r => { src.ontimeupdate = r; }), sleep(2000)]);
-      try { src.pause(); } catch (e) {}
-    } catch (e) {}
-    src.ontimeupdate = null;
-    const dur = src.duration || 0;
+    const dur = demux.duration;
     const fps = parseInt($("videoFps").value, 10) || 12;
     const total = Math.max(1, Math.floor(dur * fps));   // every frame of the video, however long — no length cap, no frame cap
-    const vd = videoDims(src.videoWidth, src.videoHeight);   // output size
+    const vd = videoDims(demux.width, demux.height);   // output size
     let dd = videoDreamDims(vd);   // dream size (capped) — the output stays vd; let so the fallback can shrink it further
     const dreamCv = document.createElement("canvas"); dreamCv.width = dd.w; dreamCv.height = dd.h;
     const outCv = document.createElement("canvas"); outCv.width = vd.w; outCv.height = vd.h;   // what the recorder + preview show
@@ -2020,17 +2058,84 @@ async function generateVideo() {
     const pv = $("vidPrev"); pv.width = vd.w; pv.height = vd.h; pv.style.display = "block";
     $("vidOut").style.display = "none";
     $("videoHint").textContent = "Dreaming… watch it build here.";
-    // Show the video's first frame in the preview right away, so you see
-    // it immediately — the preview is never a black square while the run starts.
-    try { pv.getContext("2d").drawImage(src, 0, 0, pv.width, pv.height); } catch (e) {}
     let vHueTotal = 0;   // vHueTotal: the video's own cumulative hue for Color spin (separate from the Camera's)
-    // A skipped frame still shows and records: draw the raw source frame
-    // (already in dreamCv) to the display canvas + preview, so the video
-    // keeps playing and the recording stays in sync instead of stalling.
-    // The preview is what tells you the run is alive — it must move on
-    // every frame, dreamed or skipped.
-    async function showRawFrame() {
-      try { dreamCv.getContext("2d").drawImage(src, 0, 0, dd.w, dd.h); } catch (e) {}
+    // ---- VideoDecoder driver ----
+    // The decoder hands us VideoFrames in presentation order, each with an
+    // exact timestamp. No <video>, no compositor, no seeking, no rVFC — a
+    // stale frame is impossible: a frame IS the decoded data at its time.
+    // Samples are fed in file (decode) order with backpressure
+    // (decodeQueueSize < 8), so decoded frames never pile up in memory.
+    const samples = demux.samples;
+    let sampleIdx = 0, pending = [], waiter = null, decoderDone = false, decoderError = null, flushStarted = false;
+    const wake = () => { if (waiter) { const w = waiter; waiter = null; w(); } };
+    decoder = new VideoDecoder({
+      output: (frame) => { decodedFrames++; pending.push(frame); wake(); },
+      error: (e) => { decoderError = e; wake(); },
+    });
+    try {
+      decoder.configure({ codec: demux.codec, description: demux.description, codedWidth: demux.width, codedHeight: demux.height, optimizeForLatency: true });
+    } catch (e) {
+      setVideoStatus("This device can't decode that video (" + (e && e.message || e) + ") — try an MP4 (H.264) file.", true);
+      return;
+    }
+    const feedSome = () => {
+      if (decoderError) return;
+      try {
+        while (sampleIdx < samples.length && decoder.decodeQueueSize < 8) {
+          const s = samples[sampleIdx++];
+          decoder.decode(new EncodedVideoChunk({ type: s.key ? "key" : "delta", timestamp: s.ctsUs, duration: s.durUs, data: new Uint8Array(fileBuf, s.offset, s.size) }));
+        }
+      } catch (e) { decoderError = decoderError || e; wake(); }
+    };
+    // Pump one decoded frame out of the decoder (presentation order), or
+    // null when the stream is exhausted / errored / stopped.
+    async function pumpFrame() {
+      const deadline = Date.now() + 30000;
+      while (videoRunning) {
+        if (decoderError) return null;
+        if (pending.length) return pending.shift();
+        if (decoderDone) return null;
+        if (sampleIdx < samples.length) {
+          feedSome();
+          if (pending.length) continue;
+          await new Promise(r => { waiter = r; setTimeout(() => { if (waiter === r) { waiter = null; r(); } }, 200); });
+          if (Date.now() > deadline) { decoderError = new Error("the video decoder stalled"); return null; }
+          continue;
+        }
+        // all samples fed — flush once, then drain
+        if (!flushStarted) {
+          flushStarted = true;
+          decoder.flush().then(() => { decoderDone = true; wake(); }).catch(e => { decoderError = e; wake(); });
+        }
+        await new Promise(r => { waiter = r; setTimeout(() => { if (waiter === r) { waiter = null; r(); } }, 200); });
+        if (Date.now() > deadline) { decoderError = new Error("the video decoder stalled"); return null; }
+      }
+      return null;
+    }
+    // The frame for the next target time: the first decoded frame at or
+    // after it. The held frame is reused when it already is the first
+    // frame at/after the target (native fps below the Process fps) — the
+    // dream still advances on it via carryover.
+    async function nextTargetFrame(targetUs) {
+      if (held && heldTsUs >= targetUs) { reusedFrames++; return { frame: held, tsUs: heldTsUs }; }
+      while (videoRunning) {
+        const f = await pumpFrame();
+        if (!f) return null;
+        const ts = f.timestamp;
+        if (ts < targetUs) { try { f.close(); } catch (e) {} continue; }
+        if (held && held !== f) { try { held.close(); } catch (e) {} }
+        held = f; heldTsUs = ts;
+        return { frame: f, tsUs: ts };
+      }
+      return null;
+    }
+    // A skipped frame still shows and records: draw the decoded frame raw
+    // to the display canvas + preview, so the video keeps playing and the
+    // recording stays in sync instead of stalling. The preview is what
+    // tells you the run is alive — it must move on every frame, dreamed
+    // or skipped.
+    async function showRawFrame(frame) {
+      try { dreamCv.getContext("2d").drawImage(frame, 0, 0, dd.w, dd.h); } catch (e) {}
       const dc = outCv.getContext("2d");
       dc.clearRect(0, 0, outCv.width, outCv.height);
       dc.drawImage(dreamCv, 0, 0, outCv.width, outCv.height);
@@ -2041,16 +2146,16 @@ async function generateVideo() {
       else await sleep(1000 / fps);
     }
     let i = 0, consecFail = 0, curSrcTime = null;
-    videoRVFCBroken = false; videoRVFCTimeouts = 0; videoRVFCFallbacks = 0;
     // Status helpers. The source time is the ACTUAL time in the video of
-    // the frame being dreamed (from the presented frame, not the target) —
-    // so the frame number and the video time can be seen to agree. The
-    // engine is always shown, so a slow run names its engine.
+    // the frame being dreamed — the decoded frame's own timestamp from
+    // the decoder, not a playhead — so the frame number and the video
+    // time can be seen to agree. The engine is always shown, so a slow
+    // run names its engine.
     const engLabel = () => { try { const b = tf.getBackend(); return b ? " · engine: " + (LABEL[b] || b) : ""; } catch (e) { return ""; } };
-    const srcTimeNote = () => (curSrcTime != null ? " · " + curSrcTime.toFixed(1) + "s in the video" + (videoLastSeekConfirmed ? "" : " · fallback") : "");
+    const srcTimeNote = () => (curSrcTime != null ? " · " + curSrcTime.toFixed(1) + "s in the video" : "");
     // The frame loop: every frame either dreams and advances, or fails
     // cleanly. A frame gets at most two attempts — the first, and one
-    // retry after a one-time backend switch. EVERY failure counts (seek,
+    // retry after a one-time backend switch. EVERY failure counts (decode,
     // GPU, or anything else); five consecutive failures end the run with
     // a clear status. No infinite retry, no silent hang, no lying status.
     // A per-frame timer keeps the status live while a frame is slow, so
@@ -2069,23 +2174,23 @@ async function generateVideo() {
       try {
         setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel());
         const targetT = Math.min(i / fps, Math.max(0, dur - 0.001));
-        // seekFrame waits until a frame AT targetT has actually been
-        // presented — drawImage then draws that frame, not a stale one.
-        const presentedT = await seekFrame(src, targetT);
-        curSrcTime = presentedT;   // the actual video time of the frame about to be dreamed
-        if (presentedT == null) {
-          // A bad seek is a frame failure, not a dead run: count it and
-          // skip the frame. Five in a row means the file really cannot
-          // seek, and the run ends with a clear message.
-          if (++consecFail >= 5) { setVideoStatus("Video dream failed: the video stopped seeking at frame " + (i + 1) + " (target " + targetT.toFixed(2) + "s) — try a different file.", true); break; }
-          setVideoStatus("Frame " + (i + 1) + " would not seek (target " + targetT.toFixed(2) + "s) — skipping it…");
-          await showRawFrame();
+        // The decoder hands us the frame AT targetT — no seek, no
+        // compositor, no stale frame possible.
+        const got = await nextTargetFrame(Math.round(targetT * 1e6));
+        if (!got) {
+          // No frame for this target: the decoder is exhausted or errored.
+          if (decoderError) { setVideoStatus("Video dream failed: the video decoder stopped (" + (decoderError && decoderError.message || decoderError) + ").", true); break; }
+          if (++consecFail >= 5) { setVideoStatus("Video dream failed: no frame for target " + targetT.toFixed(2) + "s at frame " + (i + 1) + " — try a different file.", true); break; }
+          setVideoStatus("Frame " + (i + 1) + " has no decoded frame (target " + targetT.toFixed(2) + "s) — skipping it…");
           skipped++; i++; continue;
         }
-        // The frame is confirmed at presentedT — show the frame number and
+        const frame = got.frame;
+        curSrcTime = got.tsUs / 1e6;   // the ACTUAL time of the decoded frame — the decoder's timestamp, not a playhead
+        // The frame is confirmed at curSrcTime — show the frame number and
         // the real video time together, so the run's position is never a mystery.
         setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel());
-        dreamCv.getContext("2d").drawImage(src, 0, 0, dd.w, dd.h);   // dream small; the output stays vd
+        dreamCv.getContext("2d").drawImage(frame, 0, 0, dd.w, dd.h);   // dream small; the output stays vd
+        if (i === 0) { try { pv.getContext("2d").drawImage(dreamCv, 0, 0, pv.width, pv.height); } catch (e) {} }   // first frame visible right away
         let cur = null, frameOk = false, frameErr = null, abortMsg = null;
         for (let attempt = 0; attempt < 2 && !frameOk && videoRunning; attempt++) {
           try {
@@ -2131,7 +2236,7 @@ async function generateVideo() {
               // Fallback is much slower: dream smaller so the run can still finish.
               dd = videoDreamDims(vd, 128);
               dreamCv.width = dd.w; dreamCv.height = dd.h;
-              dreamCv.getContext("2d").drawImage(src, 0, 0, dd.w, dd.h);   // re-draw at the new size (resizing clears the canvas)
+              dreamCv.getContext("2d").drawImage(frame, 0, 0, dd.w, dd.h);   // re-draw the same decoded frame at the new size (resizing clears the canvas)
               // Back to a "Dreaming video…" status so the per-frame timer
               // resumes updating it (it leaves switch/skip/fail messages alone).
               setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + " · engine: " + (LABEL[nb] || nb));
@@ -2144,7 +2249,7 @@ async function generateVideo() {
         if (!frameOk) {
           if (++consecFail >= 5) { setVideoStatus("Video dream failed: " + (frameErr && frameErr.message || frameErr) + " (frame " + (i + 1) + ")", true); break; }
           setVideoStatus("Frame " + (i + 1) + " failed — skipping it…");
-          await showRawFrame();
+          await showRawFrame(frame);
           skipped++; i++; continue;
         }
         // Color spin + pop: the hue keeps cycling as the video plays, and
@@ -2184,7 +2289,7 @@ async function generateVideo() {
       const fmt = (videoOutBlob.type || "").indexOf("mp4") >= 0 ? "MP4" : "WebM";
       if (videoDone) {
         const swNote = engineSwitched ? " · engine switched to " + (LABEL[engineSwitched] || engineSwitched) : "";
-        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + (videoRVFCFallbacks ? " · " + videoRVFCFallbacks + " frames fell back to the playhead" : "") + " · " + vd.w + "×" + vd.h + " · " + vModel.label + " · " + fmt + swNote + ". Watch it above, or save it.");
+        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · " + vModel.label + " · " + fmt + swNote + ". Watch it above, or save it.");
       } else if (dreamed > 0) {
         setVideoStatus("Stopped — dreamed " + dreamed + " of " + total + " frames. The video above is only the part that finished.");
       }
@@ -2199,7 +2304,8 @@ async function generateVideo() {
     try { if (rec) { rec.stop(); await done; } } catch (err) {}
   } finally {
     if (prev) { try { prev.dispose(); } catch (e) {} prev = null; }
-    try { src.remove(); } catch (e) {}   // the hidden primed video element
+    if (held) { try { held.close(); } catch (e) {} held = null; }
+    if (decoder) { try { decoder.close(); } catch (e) {} decoder = null; }
     videoRunning = false;
     setVideoBar(null);
     restorePhotoModel();   // the Photos tab gets its own model back
@@ -2238,6 +2344,7 @@ function initVideoTab() {
   $("videoPickBtn").onclick = () => $("videoIn").click();
   $("videoIn").addEventListener("change", () => {
     const f = $("videoIn").files[0]; if (!f) return;
+    videoFile = f;
     if (videoSrc) URL.revokeObjectURL(videoSrc);
     videoSrc = URL.createObjectURL(f);
     const v = document.createElement("video");
