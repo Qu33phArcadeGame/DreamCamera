@@ -1708,6 +1708,12 @@ function videoDims(vw, vh) {
 // video dream is capped to the same 256 short side. The output video keeps
 // the size from Dream size — the dreamed frame is upscaled onto it.
 const VIDEO_DREAM_MAX = 256;
+// Frame Dream carryover: one frame dreamed on its own changes by ~0.01%
+// (a single dream step moves pixels ~0.025/255), so it looks identical to
+// the raw frame — the run "skips" every frame to the eye. Blending in half
+// of the previous dreamed frame lets the dream build up across frames (the
+// way Photos builds up over a run) so it becomes clearly visible by ~frame 7.
+const FRAME_WEAVE = 0.5;
 function videoDreamDims(vd, max) {
   const cap = max || VIDEO_DREAM_MAX;
   const short = Math.min(vd.w, vd.h);
@@ -1982,6 +1988,10 @@ async function processVideo() {
       await sleep(0);   // let the UI breathe between frames — one long dream used to freeze the app
       const frameT0 = performance.now();
       const frameTimer = setInterval(() => {
+        // Don't overwrite a switch/skip/fail message — those are the
+        // diagnostics. Only refresh the "Dreaming video…" line itself.
+        const cur = $("videoStatus").textContent || "";
+        if (cur.indexOf("Dreaming video…") !== 0) return;
         const s = Math.round((performance.now() - frameT0) / 1000);
         setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + " · " + s + "s on this frame" + (engineSwitched ? " · engine: " + (LABEL[engineSwitched] || engineSwitched) : ""));
       }, 2000);
@@ -2005,6 +2015,10 @@ async function processVideo() {
             if (mode === "dreamweave" && prev) {
               const weave = parseFloat($("videoWeave").value) || 0.3;
               const w = tf.tidy(() => cur.mul(1 - weave).add(prev.mul(weave)));   // weave: carry the last frame forward
+              cur.dispose(); cur = w;
+            }
+            if (mode === "frame" && prev) {
+              const w = tf.tidy(() => cur.mul(1 - FRAME_WEAVE).add(prev.mul(FRAME_WEAVE)));   // carryover: the dream builds up across frames so it is visible
               cur.dispose(); cur = w;
             }
             if (mode !== "frame" && styleT) {
@@ -2061,6 +2075,9 @@ async function processVideo() {
                 try { styleT = await makeStyleTexture(dd.w, dd.h); }
                 catch (err) { ready = false; abortMsg = "Video dream failed: could not re-dream the style photo on the fallback engine."; break; }
               }
+              // Back to a "Dreaming video…" status so the per-frame timer
+              // resumes updating it (it leaves switch/skip/fail messages alone).
+              setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + " · engine: " + (LABEL[nb] || nb));
               continue;   // retry the same frame once, on the new engine
             }
             break;   // non-GPU error, or a GPU error after the switch: no more attempts for this frame
