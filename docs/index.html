@@ -99,7 +99,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.53</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.54</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">Photos</button>
@@ -312,10 +312,18 @@
           <select id="videoStyleRate"><option value="1">Every frame · fastest morph</option><option value="2">Every 2nd frame</option><option value="3" selected>Every 3rd frame</option><option value="6">Every 6th frame · slowest</option></select></label>
         <label id="styleStepsRow"><b>Style steps <span class="val" id="videoStyleStepsVal">3</span></b>
           <input type="range" id="videoStyleSteps" min="1" max="5" step="1" value="3"></label>
-        <label class="full"><b>Zoom in while dreaming</b>
-          <select id="videoZoom"><option value="1" selected>On · the video slowly zooms as it dreams</option><option value="0">Off · framing stays put</option></select></label>
-        <label><b>Zoom speed <span class="val" id="videoZoomSpeedVal">0.998</span></b>
-          <input type="range" id="videoZoomSpeed" min="0.990" max="1.000" step="0.001" value="0.998"></label>
+        <label class="full"><b>Zoom path</b>
+          <select id="videoZoom">
+            <option value="inout" selected>In &amp; out · zooms in and out a few times</option>
+            <option value="in">In only · zooms in slowly all the way</option>
+            <option value="0">Off · framing stays put</option>
+          </select></label>
+        <label><b>Zoom cycles <span class="val" id="videoZoomCyclesVal">3</span></b>
+          <input type="range" id="videoZoomCycles" min="1" max="5" step="1" value="3">
+          <span class="val">How many times the zoom goes in and out over the video.</span></label>
+        <label><b>Zoom amount <span class="val" id="videoZoomAmountVal">2.00×</span></b>
+          <input type="range" id="videoZoomAmount" min="1.25" max="2" step="0.25" value="2">
+          <span class="val">How far it zooms in at the closest point.</span></label>
         <label><b>Color spin <span class="val" id="videoHueSpinVal">0</span></b>
           <input type="range" id="videoHueSpin" min="0" max="10" step="0.5" value="0"></label>
         <label><b>Color pop <span class="val" id="videoSaturationVal">1.00</span></b>
