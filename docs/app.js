@@ -1722,10 +1722,14 @@ function videoDims(vw, vh) {
 // The video DREAM runs smaller than the video itself: one gradient step
 // through a free-size model (v1, the default) at 512×1109 is a huge GPU
 // allocation in the Android WebView and loses the device ("[Device] is
-// lost"). Photos dreams at 192–256 by default and works reliably, so the
-// video dream is capped to the same 256 short side. The output video keeps
-// the size from Output size — the dreamed frame is upscaled onto it.
-const VIDEO_DREAM_MAX = 256;
+// lost"). The dream is capped to a 192 short side (v1.59, was 256): the
+// dream cost scales with pixels, and 192 is 1.83x faster than 256
+// (measured against the real Inception v1 model — 8.7s vs 16.0s a frame
+// on WASM; on the phone's WebGPU that is ~6s a frame down to ~3.3s), and
+// the dream stays clearly visible at 192 (mean change 0.09 by frame 26,
+// same as at 256). The output video keeps the size from Output size —
+// the dreamed frame is upscaled onto it.
+const VIDEO_DREAM_MAX = 192;
 // Carryover: one frame dreamed on its own changes by ~0.01% (a single
 // dream step moves pixels ~0.025/255), so it looks identical to the raw
 // frame — the run "skips" every frame to the eye. Blending in half of
@@ -1846,11 +1850,27 @@ function seekTo(v, t) {
 // failed seek: the caller skips the frame, it never draws a stale one.
 // rVFC state: if it times out 3 frames in a row the WebView is not
 // presenting frames for this element — stop waiting for it (it would add
-// 800ms a frame) and fall back to the playhead for the rest of the run.
+// 3s a frame) and fall back to the playhead for the rest of the run.
+// v1.59: the element must actually be PRESENTED for rVFC to fire at all —
+// v1.58 hid it (opacity:0, z-index:-1) so rVFC never fired and every seek
+// fell back to the playhead, which reads at the target while drawImage
+// still returns the previous frame (the intro logo at 1.5s). The timeout
+// is 3s, not 800ms: a high-res seek can take over a second to decode and
+// present. The carryover is NOT the cause — proven against the real model
+// and the real frames, the logo washes out by frame 26 at weave 0.5 and
+// 0.25 alike when the source frames are correct.
 let videoRVFCBroken = false, videoRVFCTimeouts = 0;
+// Whether the last seekFrame result was confirmed by a presented frame
+// (rVFC) or fell back to the playhead, and how many fallbacks this run
+// has had. The playhead can read at the target while drawImage still
+// returns the previous frame (the v1.58 logo bug — status said 1.5s but
+// the preview showed the intro), so a fallback is a stale-frame risk,
+// not a confirmation. The status shows it per frame; the end status
+// counts them.
+let videoLastSeekConfirmed = true, videoRVFCFallbacks = 0;
 async function seekFrame(v, t) {
   const TOL = 0.05;
-  if (Math.abs(v.currentTime - t) < TOL) return v.currentTime;
+  if (Math.abs(v.currentTime - t) < TOL) { videoLastSeekConfirmed = true; return v.currentTime; }
   // Register for presented frames BEFORE seeking: rVFC fires only for
   // frames presented after registration, so registering after the seek
   // would miss the frame (a paused video presents no further frames).
@@ -1875,17 +1895,22 @@ async function seekFrame(v, t) {
   if (rVFCReady) {
     const mt = await Promise.race([
       rVFCReady,
-      new Promise(res => setTimeout(() => { cancelled = true; res(null); }, 800))
+      // 3s, not 800ms: a high-res seek can take over a second to decode
+      // and present, and falling back early is what drew the stale intro
+      // in v1.58. The 3-timeout disable below still bounds the cost if
+      // rVFC is truly broken.
+      new Promise(res => setTimeout(() => { cancelled = true; res(null); }, 3000))
     ]);
-    if (mt != null) return mt;
+    if (mt != null) { videoLastSeekConfirmed = true; return mt; }
     // rVFC did not confirm a frame at t. Count it; three in a row means
     // this WebView is not presenting frames for the element — stop waiting.
     if (++videoRVFCTimeouts >= 3) videoRVFCBroken = true;
   }
-  // Fall back to the playhead: if it is at t, proceed (the old behaviour).
-  // The status diagnostic shows the real source time, so a stale frame
-  // here is visible, not silent.
-  if (Math.abs(v.currentTime - t) < TOL) return v.currentTime;
+  // Fall back to the playhead: if it is at t, proceed — but this is NOT
+  // a confirmation. currentTime can read at t while drawImage still
+  // returns the previous frame (the v1.58 logo bug), so count the
+  // fallback and show it in the status; the end status totals them.
+  if (Math.abs(v.currentTime - t) < TOL) { videoLastSeekConfirmed = false; videoRVFCFallbacks++; return v.currentTime; }
   return null;
 }
 // A lost WebGPU device kills every frame after it — the old code just
@@ -1943,10 +1968,16 @@ async function generateVideo() {
     });
     // Prime the decoder: a video element that has never played and is not
     // in the DOM may never land its first seek in the WebView. Attach it
-    // hidden and play it muted briefly (bounded), then pause — after this,
-    // seeks land. If the prime fails, carry on anyway: the robust seekTo
-    // above still works. (Muted, 2px, invisible; removed when the run ends.)
-    src.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none;z-index:-1";
+    // and play it muted briefly (bounded), then pause — after this, seeks
+    // land. If the prime fails, carry on anyway: the robust seekTo above
+    // still works. (Muted, 2px; removed when the run ends.)
+    // The element must be PRESENTED for requestVideoFrameCallback to fire:
+    // opacity:0 + z-index:-1 (v1.58) meant the compositor never presented
+    // a frame for it, so every seek fell back to the playhead and drew a
+    // stale frame (the intro logo at 1.5s). It stays 2px at the corner,
+    // so it is invisible to the user, but it is now an opaque layer the
+    // compositor presents.
+    src.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:1;pointer-events:none;z-index:0";
     document.body.appendChild(src);
     try {
       const playP = src.play();
@@ -2010,13 +2041,13 @@ async function generateVideo() {
       else await sleep(1000 / fps);
     }
     let i = 0, consecFail = 0, curSrcTime = null;
-    videoRVFCBroken = false; videoRVFCTimeouts = 0;
+    videoRVFCBroken = false; videoRVFCTimeouts = 0; videoRVFCFallbacks = 0;
     // Status helpers. The source time is the ACTUAL time in the video of
     // the frame being dreamed (from the presented frame, not the target) —
     // so the frame number and the video time can be seen to agree. The
     // engine is always shown, so a slow run names its engine.
     const engLabel = () => { try { const b = tf.getBackend(); return b ? " · engine: " + (LABEL[b] || b) : ""; } catch (e) { return ""; } };
-    const srcTimeNote = () => (curSrcTime != null ? " · " + curSrcTime.toFixed(1) + "s in the video" : "");
+    const srcTimeNote = () => (curSrcTime != null ? " · " + curSrcTime.toFixed(1) + "s in the video" + (videoLastSeekConfirmed ? "" : " · fallback") : "");
     // The frame loop: every frame either dreams and advances, or fails
     // cleanly. A frame gets at most two attempts — the first, and one
     // retry after a one-time backend switch. EVERY failure counts (seek,
@@ -2153,7 +2184,7 @@ async function generateVideo() {
       const fmt = (videoOutBlob.type || "").indexOf("mp4") >= 0 ? "MP4" : "WebM";
       if (videoDone) {
         const swNote = engineSwitched ? " · engine switched to " + (LABEL[engineSwitched] || engineSwitched) : "";
-        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + vd.w + "×" + vd.h + " · " + vModel.label + " · " + fmt + swNote + ". Watch it above, or save it.");
+        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + (videoRVFCFallbacks ? " · " + videoRVFCFallbacks + " frames fell back to the playhead" : "") + " · " + vd.w + "×" + vd.h + " · " + vModel.label + " · " + fmt + swNote + ". Watch it above, or save it.");
       } else if (dreamed > 0) {
         setVideoStatus("Stopped — dreamed " + dreamed + " of " + total + " frames. The video above is only the part that finished.");
       }
