@@ -1708,10 +1708,11 @@ function videoDims(vw, vh) {
 // video dream is capped to the same 256 short side. The output video keeps
 // the size from Dream size — the dreamed frame is upscaled onto it.
 const VIDEO_DREAM_MAX = 256;
-function videoDreamDims(vd) {
+function videoDreamDims(vd, max) {
+  const cap = max || VIDEO_DREAM_MAX;
   const short = Math.min(vd.w, vd.h);
-  if (short <= VIDEO_DREAM_MAX) return { w: vd.w, h: vd.h };
-  const s = VIDEO_DREAM_MAX / short;
+  if (short <= cap) return { w: vd.w, h: vd.h };
+  const s = cap / short;
   return { w: Math.max(1, Math.round(vd.w * s)), h: Math.max(1, Math.round(vd.h * s)) };
 }
 function detailDims(vw, vh) {
@@ -1789,16 +1790,23 @@ async function makeStyleTexture(w, h) {
   t = dreamSteps(t, settings.lr, 8, false);
   return t;
 }
-// Seek with a timeout: a seek that never lands (thin buffer, odd codec,
-// WebView quirk) used to hang the whole run with no message at all.
+// Seek with a timeout — and never fail on a no-op. A seek to the
+// playhead's current position (frame 0 seeks to t=0, which is where the
+// video already is) may never fire `seeked` in the Android WebView, so
+// the old code waited the full 8s and reported the video as unseekable —
+// the run died at frame 0 with zero dreamed frames and no preview. If
+// the playhead is already at the target (within a frame), the frame is
+// already there: succeed at once. On timeout, re-check the position:
+// if it landed, succeed anyway.
 function seekTo(v, t) {
   return new Promise(res => {
     let done = false;
     const finish = ok => { if (!done) { done = true; res(ok); } };
+    if (Math.abs(v.currentTime - t) < 0.05) { finish(true); return; }
     v.onseeked = () => finish(true);
     v.onerror = () => finish(false);
     try { v.currentTime = t; } catch (e) { finish(false); return; }
-    setTimeout(() => finish(false), 8000);
+    setTimeout(() => finish(Math.abs(v.currentTime - t) < 0.05), 8000);
   });
 }
 // A lost WebGPU device kills every frame after it — the old code just
@@ -1815,6 +1823,19 @@ async function switchVideoBackend() {
     try { await activate(name); return name; } catch (e) { console.warn("video backend " + name + " failed", e); }
   }
   return null;
+}
+// A backend switch must not hang the run: if the fallback engine does
+// not load within the timeout, it counts as failed. (The underlying
+// switch keeps running in the background; the run aborts, and the next
+// run re-activates cleanly via ensureReady.)
+async function switchVideoBackendTimed(ms) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      switchVideoBackend(),
+      new Promise(res => { timer = setTimeout(() => res(null), ms); })
+    ]);
+  } finally { if (timer) clearTimeout(timer); }
 }
 async function processVideo() {
   if (videoRunning) return;
@@ -1837,11 +1858,25 @@ async function processVideo() {
     try { src.load(); } catch (e) { finish(); }
     setTimeout(finish, 8000);
   });
+  // Prime the decoder: a video element that has never played and is not
+  // in the DOM may never land its first seek in the WebView. Attach it
+  // hidden and play it muted briefly (bounded), then pause — after this,
+  // seeks land. If the prime fails, carry on anyway: the robust seekTo
+  // above still works. (Muted, 2px, invisible; removed when the run ends.)
+  src.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none;z-index:-1";
+  document.body.appendChild(src);
+  try {
+    const playP = src.play();
+    if (playP && playP.catch) playP.catch(() => {});
+    await Promise.race([new Promise(r => { src.ontimeupdate = r; }), sleep(2000)]);
+    try { src.pause(); } catch (e) {}
+  } catch (e) {}
+  src.ontimeupdate = null;
   const dur = src.duration || 0;
   const fps = parseInt($("videoFps").value, 10) || 12;
   const total = Math.max(1, Math.floor(dur * fps));
   const vd = videoDims(src.videoWidth, src.videoHeight);
-  const dd = videoDreamDims(vd);   // dream size (capped) — the output stays vd
+  let dd = videoDreamDims(vd);   // dream size (capped) — the output stays vd; let so the fallback can shrink it further
   const dreamCv = document.createElement("canvas"); dreamCv.width = dd.w; dreamCv.height = dd.h;
   // 4K detail pass: each dreamed frame is upscaled to 3840 on the long
   // side and dreamed again at that size, tile by tile — real 4K detail,
@@ -1879,6 +1914,7 @@ async function processVideo() {
     rec.start(200);
   } catch (e) {
     setVideoStatus("Could not start the video recorder on this device: " + (e && e.message || e), true);
+    try { src.remove(); } catch (err) {}
     videoRunning = false; updateVideoUI(); return;
   }
   // Live preview: show each dreamed frame in the square as it is made, so
@@ -1887,7 +1923,26 @@ async function processVideo() {
   const pv = $("vidPrev"); pv.width = vd.w; pv.height = vd.h; pv.style.display = "block";
   $("vidOut").style.display = "none";
   $("videoHint").textContent = "Dreaming… watch it build here.";
+  // Show the video's first frame in the preview right away, so you see
+  // it immediately — the preview is never a black square while the run starts.
+  try { pv.getContext("2d").drawImage(src, 0, 0, pv.width, pv.height); } catch (e) {}
   let prev = null, vHueTotal = 0;   // vHueTotal: the video's own cumulative hue for Color spin (separate from the Camera's)
+  // A skipped frame still shows and records: draw the raw source frame
+  // (already in dreamCv) to the display canvas + preview, so the video
+  // keeps playing and the recording stays in sync instead of stalling.
+  // The preview is what tells you the run is alive — it must move on
+  // every frame, dreamed or skipped.
+  async function showRawFrame() {
+    try { dreamCv.getContext("2d").drawImage(src, 0, 0, dd.w, dd.h); } catch (e) {}
+    const dc = dispCv.getContext("2d");
+    dc.clearRect(0, 0, dispCv.width, dispCv.height);
+    dc.drawImage(dreamCv, 0, 0, dispCv.width, dispCv.height);
+    vHueTotal = (vHueTotal + (parseFloat($("videoHueSpin").value) || 0)) % 360;
+    applyFx(dispCv, videoFx(vHueTotal));
+    pv.getContext("2d").drawImage(dispCv, 0, 0, pv.width, pv.height);
+    if (manualFrames) { vtrack.requestFrame(); await sleep(60); }
+    else await sleep(1000 / fps);
+  }
   let dreamed = 0, engineSwitched = null, videoDone = false;   // honest end status: how many frames were actually dreamed, and whether the engine switched
   // The video opens on the original starting image and returns to it at
   // the end — before, it jumped straight into the dream and ended on the
@@ -1916,97 +1971,136 @@ async function processVideo() {
     setVideoStatus("Opening on the original image…");
     await holdRaw();
     let i = 0, consecFail = 0;
+    // Bulletproof loop: every frame either dreams and advances, or fails
+    // cleanly. A frame gets at most two attempts — the first, and one
+    // retry after a one-time backend switch. EVERY failure counts (seek,
+    // GPU, or anything else); five consecutive failures end the run with
+    // a clear status. No infinite retry, no silent hang, no lying status.
+    // A per-frame timer keeps the status live while a frame is slow, so
+    // you can always tell it is working and which frame it is on.
     while (i < total && videoRunning) {
       await sleep(0);   // let the UI breathe between frames — one long dream used to freeze the app
-      const seeked = await seekTo(src, Math.min(i / fps, Math.max(0, dur - 0.001)));
-      if (!seeked) { setVideoStatus("That video stopped seeking at frame " + (i + 1) + " — try a different file.", true); break; }
-      dreamCv.getContext("2d").drawImage(src, 0, 0, dd.w, dd.h);   // dream small; the output stays vd
-      let cur = null;
+      const frameT0 = performance.now();
+      const frameTimer = setInterval(() => {
+        const s = Math.round((performance.now() - frameT0) / 1000);
+        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + " · " + s + "s on this frame" + (engineSwitched ? " · engine: " + (LABEL[engineSwitched] || engineSwitched) : ""));
+      }, 2000);
       try {
-        cur = canvasToTensor(dreamCv);
-        if (mode === "dreamweave" && prev) {
-          const weave = parseFloat($("videoWeave").value) || 0.3;
-          const w = tf.tidy(() => cur.mul(1 - weave).add(prev.mul(weave)));   // weave: carry the last frame forward
-          cur.dispose(); cur = w;
+        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + (engineSwitched ? " · engine: " + (LABEL[engineSwitched] || engineSwitched) : ""));
+        const seeked = await seekTo(src, Math.min(i / fps, Math.max(0, dur - 0.001)));
+        if (!seeked) {
+          // A bad seek is a frame failure, not a dead run: count it and
+          // skip the frame. Five in a row means the file really cannot
+          // seek, and the run ends with a clear message.
+          if (++consecFail >= 5) { setVideoStatus("Video dream failed: the video stopped seeking at frame " + (i + 1) + " — try a different file.", true); break; }
+          setVideoStatus("Frame " + (i + 1) + " would not seek — skipping it…");
+          await showRawFrame();
+          i++; continue;
         }
-        if (mode !== "frame" && styleT) {
-          // The style knobs are read live, so you can turn the zoom or the
-          // morph speed up and down while the video is dreaming.
-          const styleRate = parseInt($("videoStyleRate").value, 10) || 3;
-          if (mode === "dreamweave" && i % styleRate === 0) {   // the style itself dreams — it visibly morphs and dives into the photo as the video plays
-            // The style zooms in and dreams along with the video — extra
-            // inception: the overlay is a living dream, not a static picture.
-            const sz = parseFloat($("videoStyleZoom").value) || 0.97;
-            const ss = parseInt($("videoStyleSteps").value, 10) || 3;
-            const zs = zoomCrop(styleT, sz, 0, 0, 0); styleT.dispose(); styleT = zs;
-            styleT = dreamSteps(styleT, settings.lr, ss, false);
+        dreamCv.getContext("2d").drawImage(src, 0, 0, dd.w, dd.h);   // dream small; the output stays vd
+        let cur = null, frameOk = false, frameErr = null, abortMsg = null;
+        for (let attempt = 0; attempt < 2 && !frameOk && videoRunning; attempt++) {
+          try {
+            cur = canvasToTensor(dreamCv);
+            if (mode === "dreamweave" && prev) {
+              const weave = parseFloat($("videoWeave").value) || 0.3;
+              const w = tf.tidy(() => cur.mul(1 - weave).add(prev.mul(weave)));   // weave: carry the last frame forward
+              cur.dispose(); cur = w;
+            }
+            if (mode !== "frame" && styleT) {
+              // The style knobs are read live, so you can turn the zoom or the
+              // morph speed up and down while the video is dreaming.
+              const styleRate = parseInt($("videoStyleRate").value, 10) || 3;
+              if (mode === "dreamweave" && i % styleRate === 0) {   // the style itself dreams — it visibly morphs and dives into the photo as the video plays
+                // The style zooms in and dreams along with the video — extra
+                // inception: the overlay is a living dream, not a static picture.
+                const sz = parseFloat($("videoStyleZoom").value) || 0.97;
+                const ss = parseInt($("videoStyleSteps").value, 10) || 3;
+                const zs = zoomCrop(styleT, sz, 0, 0, 0); styleT.dispose(); styleT = zs;
+                styleT = dreamSteps(styleT, settings.lr, ss, false);
+              }
+              const mix = parseFloat($("videoMix").value) || 0.5;
+              const b = tf.tidy(() => cur.mul(1 - mix).add(styleT.mul(mix)));
+              cur.dispose(); cur = b;
+            }
+            // Zoom path: the zoom is driven by frame position, so it actually
+            // moves over the video. In & out oscillates (sine wave) a few
+            // times; In only grows linearly to the amount by the end.
+            const zPath = $("videoZoom").value;
+            if (zPath !== "0") {
+              const p = total > 1 ? i / (total - 1) : 0;
+              const cycles = Math.max(1, Math.min(5, parseInt($("videoZoomCycles").value, 10) || 3));
+              const maxMag = parseFloat($("videoZoomAmount").value) || 2;
+              const mag = zPath === "inout" ? 1 + (maxMag - 1) * (1 - Math.cos(2 * Math.PI * cycles * p)) / 2 : 1 + (maxMag - 1) * p;
+              const z = zoomCrop(cur, 1 / mag, 0, 0, 0); cur.dispose(); cur = z;
+            }
+            // On the fallback engine the dream is much slower: one step,
+            // so the run can still finish.
+            const steps = engineSwitched ? 1 : (parseInt($("videoSteps").value, 10) || 2);
+            const pulseF = 1 + (parseFloat($("videoPulse").value) || 0) * Math.sin(i * 0.25);   // Pulse: the dream strength breathes, one full breath every ~25 frames
+            cur = dreamSteps(cur, settings.lr * pulseF, steps, true);
+            await tensorToCanvas(cur, outCv);   // upscales the small dream onto the vd output canvas
+            frameOk = true;
+          } catch (e) {
+            frameErr = e;
+            if (cur) { try { cur.dispose(); } catch (err) {} cur = null; }
+            if (isGpuError(e) && !engineSwitched && attempt === 0) {
+              // The dream engine died — drop it and carry on on WASM/CPU.
+              // One switch per run, then one retry of this frame.
+              if (prev) { try { prev.dispose(); } catch (err) {} prev = null; }
+              if (styleT) { try { styleT.dispose(); } catch (err) {} styleT = null; }
+              setVideoStatus("The dream engine was lost — switching to a slower engine and carrying on…");
+              const nb = await switchVideoBackendTimed(45000);
+              if (!nb) { ready = false; abortMsg = "Video dream failed: the dream engine was lost and no fallback engine works."; break; }
+              engineSwitched = nb;
+              // Fallback is much slower: dream smaller so the run can still finish.
+              dd = videoDreamDims(vd, 128);
+              dreamCv.width = dd.w; dreamCv.height = dd.h;
+              dreamCv.getContext("2d").drawImage(src, 0, 0, dd.w, dd.h);   // re-draw at the new size (resizing clears the canvas)
+              if (mode !== "frame") {
+                try { styleT = await makeStyleTexture(dd.w, dd.h); }
+                catch (err) { ready = false; abortMsg = "Video dream failed: could not re-dream the style photo on the fallback engine."; break; }
+              }
+              continue;   // retry the same frame once, on the new engine
+            }
+            break;   // non-GPU error, or a GPU error after the switch: no more attempts for this frame
           }
-          const mix = parseFloat($("videoMix").value) || 0.5;
-          const b = tf.tidy(() => cur.mul(1 - mix).add(styleT.mul(mix)));
-          cur.dispose(); cur = b;
         }
-        // Zoom path: the zoom is driven by frame position, so it actually
-        // moves over the video. In & out oscillates (sine wave) a few
-        // times; In only grows linearly to the amount by the end.
-        const zPath = $("videoZoom").value;
-        if (zPath !== "0") {
-          const p = total > 1 ? i / (total - 1) : 0;
-          const cycles = Math.max(1, Math.min(5, parseInt($("videoZoomCycles").value, 10) || 3));
-          const maxMag = parseFloat($("videoZoomAmount").value) || 2;
-          const mag = zPath === "inout" ? 1 + (maxMag - 1) * (1 - Math.cos(2 * Math.PI * cycles * p)) / 2 : 1 + (maxMag - 1) * p;
-          const z = zoomCrop(cur, 1 / mag, 0, 0, 0); cur.dispose(); cur = z;
+        if (abortMsg) { setVideoStatus(abortMsg, true); break; }
+        if (!frameOk) {
+          if (++consecFail >= 5) { setVideoStatus("Video dream failed: " + (frameErr && frameErr.message || frameErr) + " (frame " + (i + 1) + ")", true); break; }
+          setVideoStatus("Frame " + (i + 1) + " failed — skipping it…");
+          await showRawFrame();
+          i++; continue;
         }
-        const steps = parseInt($("videoSteps").value, 10) || 2;
-        const pulseF = 1 + (parseFloat($("videoPulse").value) || 0) * Math.sin(i * 0.25);   // Pulse: the dream strength breathes, one full breath every ~25 frames
-        cur = dreamSteps(cur, settings.lr * pulseF, steps, true);
-        await tensorToCanvas(cur, outCv);   // upscales the small dream onto the vd output canvas
-      } catch (e) {
-        if (cur) { try { cur.dispose(); } catch (err) {} cur = null; }
-        if (isGpuError(e) && !engineSwitched) {
-          // The dream engine died — drop it and carry on on WASM/CPU.
-          if (prev) { try { prev.dispose(); } catch (err) {} prev = null; }
-          if (styleT) { try { styleT.dispose(); } catch (err) {} styleT = null; }
-          setVideoStatus("The dream engine was lost — switching to a slower engine and carrying on…");
-          const nb = await switchVideoBackend();
-          if (!nb) { setVideoStatus("Video dream failed: the dream engine was lost and no fallback engine works.", true); break; }
-          engineSwitched = nb;
-          if (mode !== "frame") {
-            try { styleT = await makeStyleTexture(dd.w, dd.h); }
-            catch (err) { setVideoStatus("Video dream failed: could not re-dream the style photo on the fallback engine.", true); break; }
-          }
-          consecFail = 0;
-          continue;   // retry the same frame (i not advanced)
+        if (detailOn) {
+          // Upscale to 4K, then dream the 4K frame for real, tile by tile.
+          const hx = hiCv.getContext("2d");
+          hx.clearRect(0, 0, hiD.w, hiD.h);
+          hx.drawImage(outCv, 0, 0, hiD.w, hiD.h);
+          await dreamTiled(hiCv, settings.lr, 2, (d, t) => {
+            setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + " · 4K detail tile " + d + "/" + t);
+          }, tileScratch);
         }
-        if (++consecFail >= 5) { setVideoStatus("Video dream failed: " + (e && e.message || e), true); break; }
-        setVideoStatus("Frame " + (i + 1) + " failed — skipping it…");
+        // Color spin + pop: the hue keeps cycling as the video plays, and
+        // the saturation pops. Applied to the display canvas, so the live
+        // preview and the recording both get it.
+        vHueTotal = (vHueTotal + (parseFloat($("videoHueSpin").value) || 0)) % 360;
+        applyFx(dispCv, videoFx(vHueTotal));
+        pv.getContext("2d").drawImage(dispCv, 0, 0, pv.width, pv.height);   // live preview: the new frame, in order
+        if (prev) prev.dispose();
+        prev = cur;
+        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + (engineSwitched ? " · engine: " + (LABEL[engineSwitched] || engineSwitched) : ""));
+        setVideoBar((i + 1) / total);
+        if (manualFrames) { vtrack.requestFrame(); await sleep(60); }   // let the recorder grab this frame before the next draw
+        else await sleep(1000 / fps);
+        await tf.nextFrame();
+        dreamed++;
+        consecFail = 0;
         i++;
-        continue;
+      } finally {
+        clearInterval(frameTimer);
       }
-      if (detailOn) {
-        // Upscale to 4K, then dream the 4K frame for real, tile by tile.
-        const hx = hiCv.getContext("2d");
-        hx.clearRect(0, 0, hiD.w, hiD.h);
-        hx.drawImage(outCv, 0, 0, hiD.w, hiD.h);
-        await dreamTiled(hiCv, settings.lr, 2, (d, t) => {
-          setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + " · 4K detail tile " + d + "/" + t);
-        }, tileScratch);
-      }
-      // Color spin + pop: the hue keeps cycling as the video plays, and
-      // the saturation pops. Applied to the display canvas, so the live
-      // preview and the recording both get it.
-      vHueTotal = (vHueTotal + (parseFloat($("videoHueSpin").value) || 0)) % 360;
-      applyFx(dispCv, videoFx(vHueTotal));
-      pv.getContext("2d").drawImage(dispCv, 0, 0, pv.width, pv.height);   // live preview: the new frame, in order
-      if (prev) prev.dispose();
-      prev = cur;
-      setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total);
-      setVideoBar((i + 1) / total);
-      if (manualFrames) { vtrack.requestFrame(); await sleep(60); }   // let the recorder grab this frame before the next draw
-      else await sleep(1000 / fps);
-      await tf.nextFrame();
-      dreamed++;
-      consecFail = 0;
-      i++;
     }
     videoDone = videoRunning && i >= total;
     if (videoRunning) { setVideoStatus("Closing on the original image…"); await holdRaw(); }
@@ -2017,6 +2111,7 @@ async function processVideo() {
   try { rec.stop(); await done; } catch (e) { console.error(e); }
   if (prev) { prev.dispose(); prev = null; }
   if (styleT) { styleT.dispose(); styleT = null; }
+  try { src.remove(); } catch (e) {}   // the hidden primed video element
   videoRunning = false;
   videoOutBlob = new Blob(chunks, { type: mime || "video/webm" });
   pv.style.display = "none"; $("vidOut").style.display = "";
