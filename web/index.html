@@ -99,7 +99,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.56</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.57</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">Photos</button>
@@ -243,7 +243,7 @@
   </div>
   </div>
 
-  <!-- VIDEO TAB: deepdream a whole video -->
+  <!-- VIDEO TAB: deepdream video generator -->
   <div id="videoTab" hidden>
     <div class="square" id="videoBox">
       <video id="vidOut" controls playsinline></video>
@@ -251,10 +251,10 @@
       <div class="hint" id="videoHint">Dreamed video plays here</div>
     </div>
     <div id="videoScroll" style="flex:1;min-height:0;overflow-y:auto;padding-bottom:40px;-webkit-overflow-scrolling:touch">
-    <section class="panel" aria-label="Video dream">
-      <h2>Video Dream</h2>
+    <section class="panel" aria-label="Video generator">
+      <h2>Video Generator</h2>
       <div class="row" style="margin-top:0;margin-bottom:10px">
-        <button class="big" id="videoDreamBtn">🎬 Dream this video</button>
+        <button class="big" id="videoDreamBtn">🎬 Generate video</button>
         <button class="ghost" id="videoStopBtn" disabled>Stop</button>
       </div>
       <div id="videoBar"><i></i></div>
@@ -264,54 +264,20 @@
           <input type="file" id="videoIn" accept="video/*" hidden>
           <span class="val" id="videoInfo"></span>
         </label>
-        <label class="full" id="presetRow"><b>Preset</b>
-          <select id="videoPreset">
-            <option value="dreamweave" selected>Dreamweave — living style, woven frames</option>
-            <option value="gentle">Gentle — light dream, every frame on its own</option>
-            <option value="inception">Deep Inception — style zooms and dreams hard</option>
-            <option value="transfer">Photo Transfer — your photo over the video</option>
-            <option value="slowburn">Slow Burn — deep frame dream, slowly zooming</option>
-            <option value="weavelight">Weave Light — gentle living style</option>
-            <option value="transferdeep">Transfer Deep — heavy photo overlay</option>
-            <option value="hyperweave">Hyper Weave — maximum everything</option>
-            <option value="acidweave">Acid Weave — maximum trip, style dreams hard</option>
-            <option value="deepvortex">Deep Vortex — frames smear into each other, style morphs every frame</option>
-            <option value="meltdown">Meltdown — the style photo almost takes over completely</option>
-            <option value="fractaldive">Fractal Dive — dives deepest into the photo</option>
-          </select>
-          <span class="val">Uses the model, layers and settings from the Camera tab.</span>
-        </label>
-        <label class="full" id="styleRow"><b>Style photo</b> <span class="val">— the photo the video is painted with</span>
-          <button class="ghost" id="stylePickBtn" style="width:100%">Choose a style photo</button>
-          <input type="file" id="styleIn" accept="image/*" hidden>
-          <span class="val" id="styleInfo"></span>
-        </label>
-        <label class="full"><b>Mode</b>
-          <select id="videoMode">
-            <option value="frame">Frame Dream — dream every frame, stitch it back</option>
-            <option value="transfer">Photo Transfer — a photo becomes the dream overlay</option>
-            <option value="dreamweave" selected>Dreamweave — the style dreams while the video plays</option>
-          </select>
-          <span class="val" id="videoModeNote"></span>
+        <label class="full"><b>Model</b>
+          <select id="videoModelSel"></select>
+          <span class="val" id="videoModelNote"></span>
         </label>
         <label><b>Process fps</b>
           <select id="videoFps"><option value="8">8 fps</option><option value="12" selected>12 fps</option><option value="16">16 fps</option></select></label>
-        <label><b>Dream size</b>
+        <label><b>Output size</b>
           <select id="videoSize"><option value="256">256 · fast</option><option value="384">384</option><option value="512" selected>512</option><option value="768">768</option><option value="1024">1024 · max (slow)</option></select>
-          <span class="val">How big each frame is dreamed. Bigger is sharper — and slower.</span></label>
+          <span class="val">The finished video's size. The dream runs at 256 and is upscaled onto it.</span></label>
         <div class="scroll-gap" aria-hidden="true">⋮</div>
         <label><b>Steps / frame <span class="val" id="videoStepsVal">3</span></b>
           <input type="range" id="videoSteps" min="1" max="5" step="1" value="3"></label>
-        <label id="mixRow"><b>Style mix <span class="val" id="videoMixVal">0.70</span></b>
-          <input type="range" id="videoMix" min="0" max="1" step="0.05" value="0.7"></label>
-        <label id="weaveRow"><b>Weave <span class="val" id="videoWeaveVal">0.50</span></b>
-          <input type="range" id="videoWeave" min="0" max="0.9" step="0.05" value="0.5"></label>
-        <label id="styleZoomRow"><b>Style zoom <span class="val" id="videoStyleZoomVal">0.970</span></b>
-          <input type="range" id="videoStyleZoom" min="0.90" max="0.995" step="0.005" value="0.97"></label>
-        <label id="styleRateRow"><b>Style dreams</b>
-          <select id="videoStyleRate"><option value="1">Every frame · fastest morph</option><option value="2">Every 2nd frame</option><option value="3" selected>Every 3rd frame</option><option value="6">Every 6th frame · slowest</option></select></label>
-        <label id="styleStepsRow"><b>Style steps <span class="val" id="videoStyleStepsVal">3</span></b>
-          <input type="range" id="videoStyleSteps" min="1" max="5" step="1" value="3"></label>
+        <label><b>Dream strength <span class="val" id="videoLrVal">0.040</span></b>
+          <input type="range" id="videoLr" min="0.01" max="0.10" step="0.005" value="0.04"></label>
         <label class="full"><b>Zoom path</b>
           <select id="videoZoom">
             <option value="inout" selected>In &amp; out · zooms in and out a few times</option>
@@ -353,9 +319,6 @@
           <input type="range" id="videoEcho" min="0" max="1" step="0.05" value="0"></label>
         <label><b>Scanlines <span class="val" id="videoScanlinesVal">0.00</span></b>
           <input type="range" id="videoScanlines" min="0" max="1" step="0.05" value="0"></label>
-        <label class="full"><b>Detail pass</b>
-          <select id="videoDetail"><option value="0" selected>Off · dream size only</option><option value="4k">4K · real detail, dreamed tile by tile (slow)</option></select>
-          <span class="val">Turns each dreamed frame into true 4K — the frame is dreamed again at 3840px, tile by tile, so the detail is real, not an upscale. A long clip can take over an hour; short clips are quick.</span></label>
       </div>
       <div id="videoStatus">Pick a video to begin.</div>
       <div class="row">
