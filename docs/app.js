@@ -1704,6 +1704,17 @@ function initControls() {
 // (demuxMP4, below) reads the file's own sample table; it was verified
 // against Coby's real file (1080x2340 H.264, 317 frames, avc1.4d0033).
 //
+// v1.62: 4K output — Output size now offers 2160 (4K, the default), which
+// keeps the source aspect (9:16 → 2160×3840, 16:9 → 3840×2160, 1:1 →
+// 2160×2160) at a 30 Mbps bitrate, and falls back to 1024 with a clear
+// note if 4K recording fails on the device. The dream still runs at 192
+// for speed; the 4K is an upscale of that dream, so it is sharper on a
+// high-res screen but adds no new dream detail. Also: the demuxer now
+// accepts H.265/HEVC (hvc1/hev1 + hvcC), VP9 (vp09 + vpcC), and AV1
+// (av01 + av1C), not just H.264 — a real MP4 in another codec was
+// rejected as "not H.264" — and the run checks VideoDecoder.
+// isConfigSupported for the file's codec first, so an unsupported codec
+// fails with its real name instead of a misleading error.
 // v1.61: the decoder is no longer fatal on its first error — v1.60
 // stopped after 2 frames when the decoder died, and the post-loop
 // status overwrote the decoder-error message with a bare "Stopped",
@@ -1731,10 +1742,15 @@ let videoSrc = null, videoMeta = null, videoFile = null;
 let videoRunning = false, videoOutBlob = null, videoOutUrl = null, videoOutMime = null;
 function setVideoStatus(t, err) { const el = $("videoStatus"); el.textContent = t; el.style.color = err ? "#ff7b7b" : "#7df9ff"; }
 function setVideoBar(p) { const b = $("videoBar"); if (p == null) { b.style.visibility = "hidden"; return; } b.style.visibility = "visible"; b.firstChild.style.width = Math.round(Math.max(0, Math.min(1, p)) * 100) + "%"; }
-function videoDims(vw, vh) {
-  const short = parseInt(($("videoSize") && $("videoSize").value) || "512", 10) || 512;   // the output size — separate from the Camera quality, so a video can be big while the Camera stays fast
-  if (vw >= vh) return { w: Math.round(short * vw / vh), h: short };
-  return { w: short, h: Math.round(short * vh / vw) };
+function videoDims(vw, vh, shortOverride) {
+  const short = shortOverride || parseInt(($("videoSize") && $("videoSize").value) || "512", 10) || 512;   // the output size — separate from the Camera quality, so a video can be big while the Camera stays fast
+  // 4K (short 2160) keeps the source aspect: 9:16 → 2160×3840, 16:9 → 3840×2160, 1:1 → 2160×2160.
+  // The scaled side is rounded to an even number — H.264 (4:2:0) needs
+  // even width and height, and a plain Math.round can land odd (Coby's
+  // 1080×2340 at 1024 gives 2219, which MediaRecorder cannot encode).
+  const even = n => Math.max(2, Math.round(n / 2) * 2);
+  if (vw >= vh) return { w: even(short * vw / vh), h: short };
+  return { w: short, h: even(short * vh / vw) };
 }
 // The video DREAM runs smaller than the video itself: one gradient step
 // through a free-size model (v1, the default) at 512×1109 is a huge GPU
@@ -1835,13 +1851,54 @@ function restorePhotoModel() {
   saveSettings();   // persist the Photos layers again, so a save during the run cannot leave the video model's layers stored
   buildModelSelect(); buildLayers(); buildPresets(); updateUI();
 }
+// HEVC codec string (ISO/IEC 14496-15 Annex E.3, as VideoDecoder wants
+// it): hev1.<profile_idc>.<compat>.<tier><level_idc>.<constraints>.
+// compat: the 32 hvcC compatibility flags, bit-reversed — flag j maps to
+// bit j of the value (flag[31] is the most significant bit, flag[0] the
+// least), so a Main + Main 10 stream is "6". tier: L (Main) or H (High).
+// constraints: the 6 constraint bytes, each as hex, separated by periods,
+// trailing zero bytes omitted (progressive frame-only is "B0").
+function hevcCodecSuffix(hvcC) {
+  const space = (hvcC[1] >> 6) & 0x03;
+  const spaceStr = space === 0 ? "" : ["", "A", "B", "C"][space];
+  const profile = hvcC[1] & 0x1F;
+  const tier = (hvcC[1] >> 5) & 0x01 ? "H" : "L";
+  const level = hvcC[12];
+  let compat = 0;
+  const flags = ((hvcC[2] << 24) | (hvcC[3] << 16) | (hvcC[4] << 8) | hvcC[5]) >>> 0;
+  for (let j = 0; j < 32; j++) if ((flags >>> (31 - j)) & 1) compat |= (1 << j);
+  const consBytes = [];
+  for (let i = 0; i < 6; i++) consBytes.push(hvcC[6 + i].toString(16).padStart(2, "0").toUpperCase());
+  while (consBytes.length > 1 && consBytes[consBytes.length - 1] === "00") consBytes.pop();
+  const cons = consBytes.join(".");
+  return spaceStr + profile + "." + (compat >>> 0).toString(16).toUpperCase() + "." + tier + level + (cons ? "." + cons : "");
+}
+// VP9 codec string (vp09.PP.LL.DD): profile, level, bit depth, each
+// 2 digits. The vpcC record is profile, level, bitDepth/chroma/range,
+// primaries, transfer, matrix, initSize, initData — but ffmpeg writes a
+// 4-byte version/flags prefix (01 00 00 00) before the record, so the
+// fields sit at +4; a bare record has them at +0. Pick the offset whose
+// bit depth is a real VP9 depth (8/10/12); the other offset reads 0
+// (prefixed) or garbage (bare) there.
+function vp9CodecString(vpcC) {
+  const depthAt = o => (vpcC[o + 2] >> 4) & 0x0F;
+  const valid = o => vpcC.length >= o + 3 && vpcC[o] <= 3 && (depthAt(o) === 8 || depthAt(o) === 10 || depthAt(o) === 12);
+  const off = valid(4) ? 4 : 0;
+  const profile = vpcC[off], level = vpcC[off + 1], depth = depthAt(off);
+  return "vp09." + String(profile).padStart(2, "0") + "." + String(level).padStart(2, "0") + "." + String(depth).padStart(2, "0");
+}
 // Minimal MP4 demuxer (v1.60) — reads the file's own sample table so
-// VideoDecoder can be fed exact H.264 samples. No <video>, no seeking.
+// VideoDecoder can be fed exact samples. No <video>, no seeking.
 // Handles: 32/64-bit box sizes, moov before or after mdat, stco/co64,
 // stsc/stsz/stts/ctts (v0 + v1)/stss, uniform + per-sample sizes.
-// Throws on: no moov (fragmented MP4), no video track, not H.264, no
-// avcC. Returns { duration (s), width, height, codec ("avc1.xxxxxx"),
-// description (Uint8Array, the avcC record), samples: [{ offset, size,
+// Codecs: H.264 (avc1 + avcC), H.265/HEVC (hvc1/hev1 + hvcC), VP9
+// (vp09 + vpcC), AV1 (av01 + av1C) — v1.62, because a real MP4 that is
+// not H.264 (his phone records HEVC) was rejected as "not H.264".
+// Throws on: no moov (fragmented MP4), no video track, unsupported
+// video codec (named in the message), missing config record. Returns
+// { duration (s), width, height, codec (e.g. "avc1.4d0033" or
+// "hev1.1.6.L153.B0"), codecName ("H.264", "H.265/HEVC", "VP9", "AV1"),
+// description (Uint8Array, the config record), samples: [{ offset, size,
 // ctsUs, durUs, key }] } in file (decode) order. Verified against Coby's
 // real file (1080x2340 H.264, 317 frames): duration 4.5662s, codec
 // avc1.4d0033, 317 samples, cts==dts (no B-frames), all sample offsets in
@@ -1865,8 +1922,10 @@ function demuxMP4(ab) {
     return out;
   }
   const find = (list, type) => list.find(b => b.type === type);
-  const moov = find(boxes(0, buf.length), "moov");
+  const topBoxes = boxes(0, buf.length);
+  const moov = find(topBoxes, "moov");
   if (!moov) throw new Error("no moov box — this file looks like a fragmented MP4, which is not supported");
+  if (find(topBoxes, "moof")) throw new Error("fragmented MP4 (moof) — this file was saved as fragments (e.g. a video saved from this app); re-dreaming it is not supported yet");
   let video = null;
   for (const trak of boxes(moov.payload, moov.end).filter(b => b.type === "trak")) {
     const mdia = find(boxes(trak.payload, trak.end), "mdia");
@@ -1886,19 +1945,57 @@ function demuxMP4(ab) {
   }
   if (!video) throw new Error("no video track in this file");
   const st = video.st;
-  const timescale = dv.getUint32(video.mdhd.payload + 12);
+  // mdhd: version 0 has 32-bit creation/modification times (timescale at
+  // +12); version 1 has 64-bit times (timescale at +20). MediaRecorder
+  // writes version 1, so reading +12 gives 0 and a bogus "bad timescale".
+  const mdhdVer = buf[video.mdhd.payload];
+  const timescale = dv.getUint32(video.mdhd.payload + (mdhdVer === 1 ? 20 : 12));
   if (!timescale) throw new Error("bad video timescale");
-  // stsd -> avc1 -> avcC
+  // stsd -> video sample entry -> config record. H.264 (avc1 + avcC),
+  // H.265/HEVC (hvc1/hev1 + hvcC), VP9 (vp09 + vpcC), AV1 (av01 + av1C).
+  // A valid MP4 with any other video codec is rejected with its real
+  // name — never "not H.264", which is wrong for a real MP4.
   if (!st.stsd) throw new Error("no sample description (stsd)");
-  const avc1 = find(boxes(st.stsd.payload + 8, st.stsd.end), "avc1");
-  if (!avc1) throw new Error("not H.264 (no avc1 sample entry)");
-  const width = dv.getUint16(avc1.payload + 24);
-  const height = dv.getUint16(avc1.payload + 26);
-  const avcC = find(boxes(avc1.payload + 78, avc1.end), "avcC");
-  if (!avcC) throw new Error("no H.264 config (avcC)");
-  const description = new Uint8Array(buf.subarray(avcC.payload, avcC.end));
+  const entries = boxes(st.stsd.payload + 8, st.stsd.end);
+  const entry = entries.find(b => b.type === "avc1" || b.type === "hvc1" || b.type === "hev1" || b.type === "vp09" || b.type === "av01");
+  if (!entry) {
+    const got = entries.length ? entries.map(b => b.type).join(", ") : "none";
+    throw new Error("unsupported video codec in this MP4 (" + got + ") — this device needs H.264, H.265/HEVC, VP9, or AV1");
+  }
+  const width = dv.getUint16(entry.payload + 24);
+  const height = dv.getUint16(entry.payload + 26);
+  const children = boxes(entry.payload + 78, entry.end);
   const hex = n => n.toString(16).padStart(2, "0");
-  const codec = "avc1." + hex(description[1]) + hex(description[2]) + hex(description[3]);
+  let codec, codecName, description;
+  if (entry.type === "avc1") {
+    const avcC = find(children, "avcC");
+    if (!avcC) throw new Error("no H.264 config (avcC)");
+    description = new Uint8Array(buf.subarray(avcC.payload, avcC.end));
+    codec = "avc1." + hex(description[1]) + hex(description[2]) + hex(description[3]);
+    codecName = "H.264";
+  } else if (entry.type === "hvc1" || entry.type === "hev1") {
+    const hvcC = find(children, "hvcC");
+    if (!hvcC) throw new Error("no H.265 config (hvcC)");
+    description = new Uint8Array(buf.subarray(hvcC.payload, hvcC.end));
+    codec = entry.type + "." + hevcCodecSuffix(description);
+    codecName = "H.265/HEVC";
+  } else if (entry.type === "vp09") {
+    const vpcC = find(children, "vpcC");
+    if (!vpcC) throw new Error("no VP9 config (vpcC)");
+    description = new Uint8Array(buf.subarray(vpcC.payload, vpcC.end));
+    codec = vp9CodecString(description);
+    codecName = "VP9";
+  } else {   // av01
+    const av1C = find(children, "av1C");
+    if (!av1C) throw new Error("no AV1 config (av1C)");
+    description = new Uint8Array(buf.subarray(av1C.payload, av1C.end));
+    const profile = (description[1] >> 5) & 0x07;
+    const levelIdx = description[1] & 0x1F;
+    const tier = (description[2] >> 7) & 0x01;
+    const depth = (description[2] >> 5) & 0x01 ? 12 : ((description[2] >> 6) & 0x01 ? 10 : 8);
+    codec = "av01." + profile + "." + String(levelIdx).padStart(2, "0") + (tier ? "H" : "M") + "." + String(depth).padStart(2, "0");
+    codecName = "AV1";
+  }
   // stts -> per-sample decode timestamps + durations
   if (!st.stts) throw new Error("no time-to-sample table (stts)");
   const dts = [], dur = [];
@@ -1969,9 +2066,17 @@ function demuxMP4(ab) {
     }
   }
   if (!samples.length) throw new Error("no video samples in this file");
-  const last = samples[samples.length - 1];
-  const duration = (last.ctsUs + last.durUs) / 1e6;
-  return { duration, width, height, codec, description, samples };
+  // Duration: the mdhd track duration is authoritative. With B-frames
+  // the composition times are not monotonic in decode order, so the
+  // latest (cts+dur) overestimates — this HEVC file reads 2.25s that
+  // way vs the real 2.008s. Fall back to it only if mdhd has no duration.
+  const mdhdDurRaw = mdhdVer === 1 ? Number(dv.getBigUint64(video.mdhd.payload + 24)) : dv.getUint32(video.mdhd.payload + 16);
+  let duration = mdhdDurRaw / timescale;
+  if (!duration || !isFinite(duration)) {
+    duration = 0;
+    for (const s of samples) duration = Math.max(duration, (s.ctsUs + s.durUs) / 1e6);
+  }
+  return { duration, width, height, codec, codecName, description, samples };
 }
 // A lost WebGPU device kills every frame after it — the old code just
 // reported "Video dream failed" and stopped. Instead, drop the dead
@@ -2025,7 +2130,22 @@ async function generateVideo() {
   if (!fileBuf || !fileBuf.byteLength) { setVideoStatus("Could not read that video file.", true); restorePhotoModel(); return; }
   let demux;
   try { demux = demuxMP4(fileBuf); }
-  catch (e) { setVideoStatus("Could not read that video: " + (e && e.message || e) + ". Try an MP4 (H.264) file.", true); restorePhotoModel(); return; }
+  catch (e) { setVideoStatus("Could not read that video: " + (e && e.message || e) + ".", true); restorePhotoModel(); return; }
+  // Only offer what this device can actually decode: ask VideoDecoder
+  // whether the file's codec is supported before configuring it. HEVC
+  // is hardware on the S25 Ultra; VP9/AV1 depend on the WebView. If the
+  // check itself fails, let configure() decide — its error names the codec.
+  let codecSupported = true;
+  try {
+    if (typeof VideoDecoder.isConfigSupported === "function") {
+      const r = await VideoDecoder.isConfigSupported({ codec: demux.codec, description: demux.description, codedWidth: demux.width, codedHeight: demux.height });
+      codecSupported = !!(r && r.supported);
+    }
+  } catch (e) { codecSupported = true; }
+  if (!codecSupported) {
+    setVideoStatus("This video is " + demux.codecName + " (" + demux.codec + "), which this device cannot decode. Try an H.264 MP4.", true);
+    restorePhotoModel(); return;
+  }
   videoRunning = true; updateVideoUI();
   let rec = null, done = null, prev = null, mime = null, vtrack = null, manualFrames = false;
   let dreamed = 0, skipped = 0, engineSwitched = null, videoDone = false;
@@ -2035,30 +2155,59 @@ async function generateVideo() {
     const dur = demux.duration;
     const fps = parseInt($("videoFps").value, 10) || 12;
     const total = Math.max(1, Math.floor(dur * fps));   // every frame of the video, however long — no length cap, no frame cap
-    const vd = videoDims(demux.width, demux.height);   // output size
+    let vd = videoDims(demux.width, demux.height);   // output size (2160 = 4K by default)
     let dd = videoDreamDims(vd);   // dream size (capped) — the output stays vd; let so the fallback can shrink it further
     const dreamCv = document.createElement("canvas"); dreamCv.width = dd.w; dreamCv.height = dd.h;
     const outCv = document.createElement("canvas"); outCv.width = vd.w; outCv.height = vd.h;   // what the recorder + preview show
+    let outNote = "";   // set if 4K recording fell back to 1024 — the end status must say so
+    let recError = null;   // a mid-run encoder error — surfaced in the end status, never silent
+    // 4K needs a much higher bitrate than 1024 or it comes out blocky:
+    // 30 Mbps at the 4K size, 8 Mbps below it.
+    function videoBpsFor(d) { return Math.min(d.w, d.h) >= 2160 ? 30000000 : 8000000; }
     // Record one frame per dreamed frame, not in real time: each frame takes
     // seconds to dream, so a live captureStream(fps) records dozens of
     // duplicate frames per dreamed frame and the saved video comes out
     // minutes long, choppy and glitchy. captureStream(0) + requestFrame
     // captures exactly one frame per draw, so the video is the right length
     // and smooth. (Falls back to the live stream if requestFrame is missing.)
-    const probeStream = outCv.captureStream(0);
-    vtrack = probeStream.getVideoTracks()[0];
-    manualFrames = !!(vtrack && typeof vtrack.requestFrame === "function");
-    const stream = manualFrames ? probeStream : outCv.captureStream(fps);
-    mime = videoMime();   // MP4 first (video/mp4;codecs=avc1), then WebM — whatever this WebView supports
     const chunks = [];
+    function makeRecorder() {
+      const s = outCv.captureStream(0);
+      const vt = s.getVideoTracks()[0];
+      const mf = !!(vt && typeof vt.requestFrame === "function");
+      const st = mf ? s : outCv.captureStream(fps);
+      const m = videoMime();   // MP4 first (video/mp4;codecs=avc1), then WebM — whatever this WebView supports
+      const r = new MediaRecorder(st, m ? { mimeType: m, videoBitsPerSecond: videoBpsFor(vd) } : { videoBitsPerSecond: videoBpsFor(vd) });
+      r.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+      r.onerror = e => { recError = e; };
+      const d = new Promise(res => r.onstop = res);
+      r.start(200);
+      return { rec: r, done: d, vtrack: vt, manualFrames: mf, mime: m };
+    }
     try {
-      rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8000000 } : { videoBitsPerSecond: 8000000 });
-      rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-      done = new Promise(r => rec.onstop = r);
-      rec.start(200);
+      const made = makeRecorder();
+      rec = made.rec; done = made.done; vtrack = made.vtrack; manualFrames = made.manualFrames; mime = made.mime;
     } catch (e) {
-      setVideoStatus("Could not start the video recorder on this device: " + (e && e.message || e), true);
-      return;
+      if (Math.min(vd.w, vd.h) >= 2160) {
+        // 4K recording failed on this device — fall back to 1024 with a
+        // clear note, instead of failing the run. (The dream keeps its
+        // 192 size; only the output canvas shrinks.)
+        vd = videoDims(demux.width, demux.height, 1024);
+        dd = videoDreamDims(vd);
+        dreamCv.width = dd.w; dreamCv.height = dd.h;
+        outCv.width = vd.w; outCv.height = vd.h;
+        outNote = " · 4K recording is not supported on this device, fell back to 1024";
+        try {
+          const made = makeRecorder();
+          rec = made.rec; done = made.done; vtrack = made.vtrack; manualFrames = made.manualFrames; mime = made.mime;
+        } catch (e2) {
+          setVideoStatus("Could not start the video recorder on this device: " + (e2 && e2.message || e2), true);
+          return;
+        }
+      } else {
+        setVideoStatus("Could not start the video recorder on this device: " + (e && e.message || e), true);
+        return;
+      }
     }
     // Live preview: show each dreamed frame in the square as it is made, so
     // you watch the video build smoothly while it records. The finished
@@ -2347,7 +2496,8 @@ async function generateVideo() {
         const swNote = engineSwitched ? " · engine switched to " + (LABEL[engineSwitched] || engineSwitched) : "";
         const recNote = decoderRecoveries ? " · decoder recovered " + decoderRecoveries + "×" : "";
         const badNote = badSamples ? " · " + badSamples + " bad samples skipped" : "";
-        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + ". Watch it above, or save it.");
+        const recErrNote = recError ? " · recorder error: " + (recError.message || recError.error || recError) : "";
+        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + recErrNote + outNote + ". Watch it above, or save it.");
       } else if (stopReason) {
         // A failure stopped the run — the reason MUST be shown. Never
         // overwrite it with the bare "Stopped" line (v1.60 hid the
