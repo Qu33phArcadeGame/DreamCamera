@@ -2232,7 +2232,7 @@ async function generateVideo() {
               consecFail = 0;
               continue;   // retry the same frame target with the fresh decoder
             }
-            stopReason = "Video dream failed: the video decoder stopped (" + errMsg + ") and could not recover";
+            stopReason = "Video dream failed: the video decoder stopped (" + errMsg + ") and could not recover · decoded " + decodedFrames + " frames · sample " + sampleIdx + " of " + samples.length;
             setVideoStatus(stopReason, true);
             break;
           }
@@ -2354,9 +2354,14 @@ async function generateVideo() {
         // decoder error this way: it dreamed 2 frames, the decoder died,
         // and the status just said "Stopped — dreamed 2 of 749 frames").
         setVideoStatus(stopReason + " — dreamed " + dreamed + " of " + total + " frames. The video above is only the part that finished.", true);
-      } else if (dreamed > 0) {
-        // No failure — the user pressed stop.
+      } else if (!videoRunning && dreamed > 0) {
+        // No failure — the user pressed stop. The bare "Stopped" line is
+        // shown ONLY here (videoRunning false at loop exit).
         setVideoStatus("Stopped — dreamed " + dreamed + " of " + total + " frames. The video above is only the part that finished.");
+      } else if (videoRunning) {
+        // Should not happen (every break sets stopReason), but a silent
+        // stop must never be possible again — always name a reason.
+        setVideoStatus("Video dream stopped unexpectedly at frame " + (i + 1) + " of " + total + " (no reason recorded) — dreamed " + dreamed + " frames. The video above is only the part that finished.", true);
       }
       // else the failure message set in the loop stays — never claim Done for a run that dreamed almost nothing
     } else {
