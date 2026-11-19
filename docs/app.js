@@ -2078,6 +2078,80 @@ function demuxMP4(ab) {
   }
   return { duration, width, height, codec, codecName, description, samples };
 }
+// ---- Minimal MP4 muxer (v1.63) ----
+// The inverse of demuxMP4: takes H.264 (AVC) samples and writes a
+// non-fragmented MP4 (ftyp + moov + mdat) with EXACT timing — every
+// sample lasts exactly 1/fps seconds, so the file is exactly
+// total/fps = the source duration. Used by the VideoEncoder recorder,
+// because MediaRecorder + canvas.captureStream(0) + requestFrame
+// timestamps each frame by when it was produced (the dream takes
+// ~0.3s a frame): at 1024 the same 749 frames came out as a 223s
+// slow-motion video (v1.61 file: 716 frames, 223.5s, ~0.3s between
+// frames), and at 4K the recorder re-times them to ~24 fps, so the
+// same run comes out 31s (v1.62). The code never set the output
+// timing, so the duration was whatever the recorder did. Here the
+// timing is set explicitly. The file is non-fragmented (moov before
+// mdat), so this app's demuxer can read it back — a saved video can
+// be dreamed again.
+function muxMP4Video(samples, avcC, width, height, fps) {
+  const n = samples.length;
+  if (!n) throw new Error("no frames to write");
+  if (!avcC || !avcC.length) throw new Error("no H.264 config (avcC)");
+  // Timescale 90000: 90000/fps is exact for fps 8/12/16 (11250/7500/5625).
+  const TS = 90000, DELTA = Math.round(TS / fps);
+  if (DELTA * fps !== TS) throw new Error("unsupported fps " + fps);
+  const u32 = v => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v >>> 0); return b; };
+  const u16 = v => { const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, v & 0xffff); return b; };
+  const str = s => { const b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); return b; };
+  const zeros = k => new Uint8Array(k);
+  const cat = parts => { let len = 0; for (const p of parts) len += p.length; const o = new Uint8Array(len); let at = 0; for (const p of parts) { o.set(p, at); at += p.length; } return o; };
+  const box = (type, ...payload) => { const body = cat(payload); return cat([u32(body.length + 8), str(type), body]); };
+  const verFlags = (v, f) => new Uint8Array([v, (f >> 16) & 255, (f >> 8) & 255, f & 255]);
+  const mvhdDur = Math.round(n * 1000 / fps);   // ms
+  const mdhdDur = n * DELTA;   // in TS units
+  const keyIdx = [];
+  for (let i = 0; i < n; i++) if (samples[i].key) keyIdx.push(i + 1);   // 1-based
+  if (!keyIdx.length) keyIdx.push(1);
+  const sizes = samples.map(s => s.data.length);
+  const ftyp = box("ftyp", str("isom"), u32(512), str("isom"), str("iso2"), str("avc1"), str("mp41"));
+  const mvhd = box("mvhd", verFlags(0, 0), u32(0), u32(0), u32(1000), u32(mvhdDur), u32(0x00010000), u16(0x0100), u16(0), zeros(8),
+    u32(0x00010000), u32(0), u32(0), u32(0), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x40000000), zeros(24), u32(2));
+  const tkhd = box("tkhd", verFlags(0, 7), u32(0), u32(0), u32(1), u32(0), u32(mvhdDur), zeros(8),
+    u16(0), u16(0), u16(0), u16(0),
+    u32(0x00010000), u32(0), u32(0), u32(0), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x40000000),
+    u32(width << 16), u32(height << 16));
+  const mdhd = box("mdhd", verFlags(0, 0), u32(0), u32(0), u32(TS), u32(mdhdDur), u16(0x55c4), u16(0));
+  const hdlr = box("hdlr", verFlags(0, 0), u32(0), str("vide"), zeros(12), str("VideoHandler\0"));
+  const vmhd = box("vmhd", verFlags(0, 1), u16(0), u16(0), u16(0), u16(0));
+  const dinf = box("dinf", box("dref", verFlags(0, 0), u32(1), box("url ", verFlags(0, 1))));
+  // avc1 sample entry: 78 fixed bytes, then the avcC box. (demuxMP4
+  // reads width at +24, height at +26, and avcC at +78.)
+  const avc1Fixed = cat([zeros(6), u16(1), u16(0), u16(0), zeros(12), u16(width), u16(height),
+    u32(0x00480000), u32(0x00480000), u32(0), u16(1), zeros(32), u16(0x0018), u16(0xffff)]);
+  const avc1 = box("avc1", avc1Fixed, box("avcC", avcC));
+  const stsd = box("stsd", verFlags(0, 0), u32(1), avc1);
+  const stts = box("stts", verFlags(0, 0), u32(1), u32(n), u32(DELTA));
+  const stss = box("stss", verFlags(0, 0), u32(keyIdx.length), ...keyIdx.map(k => u32(k)));
+  const stsc = box("stsc", verFlags(0, 0), u32(1), u32(1), u32(n), u32(1));
+  const stsz = box("stsz", verFlags(0, 0), u32(0), u32(n), ...sizes.map(s => u32(s)));
+  // stco needs the mdat data offset = ftyp + moov + mdat header. moov's
+  // size does not depend on the offset value (it is a fixed 4 bytes), so
+  // build moov once with a placeholder, measure it, then rebuild with
+  // the real offset.
+  const buildMoov = chunkOff => {
+    const stco = box("stco", verFlags(0, 0), u32(1), u32(chunkOff));
+    const stbl = box("stbl", stsd, stts, stss, stsc, stsz, stco);
+    const minf = box("minf", vmhd, dinf, stbl);
+    const mdia = box("mdia", mdhd, hdlr, minf);
+    const trak = box("trak", tkhd, mdia);
+    return box("moov", mvhd, trak);
+  };
+  let moov = buildMoov(0);
+  const chunkOff = ftyp.length + moov.length + 8;
+  moov = buildMoov(chunkOff);
+  const mdatHead = cat([u32(8 + sizes.reduce((a, b) => a + b, 0)), str("mdat")]);
+  return new Blob([ftyp, moov, mdatHead, ...samples.map(s => s.data)], { type: "video/mp4" });
+}
 // A lost WebGPU device kills every frame after it — the old code just
 // reported "Video dream failed" and stopped. Instead, drop the dead
 // backend and carry on on WASM/CPU, retrying the same frame.
@@ -2148,6 +2222,8 @@ async function generateVideo() {
   }
   videoRunning = true; updateVideoUI();
   let rec = null, done = null, prev = null, mime = null, vtrack = null, manualFrames = false;
+  let veEncoder = null, veConfig = null, veError = null, recorderKind = null, recKindNote = "";   // v1.63: VideoEncoder recorder state (declared here so the catch/finally can close it)
+  const veChunks = [];   // VideoEncoder output: {data: Uint8Array, key: bool} in presentation order
   let dreamed = 0, skipped = 0, engineSwitched = null, videoDone = false;
   let decoder = null, held = null, heldTsUs = -1, decodedFrames = 0, reusedFrames = 0;
   let stopReason = null, decoderRecoveries = 0, badSamples = 0;   // v1.61: stopReason is WHY the run stopped — the post-loop status must never hide it again (v1.60 overwrote the decoder-error message with a bare "Stopped")
@@ -2164,13 +2240,74 @@ async function generateVideo() {
     // 4K needs a much higher bitrate than 1024 or it comes out blocky:
     // 30 Mbps at the 4K size, 8 Mbps below it.
     function videoBpsFor(d) { return Math.min(d.w, d.h) >= 2160 ? 30000000 : 8000000; }
-    // Record one frame per dreamed frame, not in real time: each frame takes
-    // seconds to dream, so a live captureStream(fps) records dozens of
-    // duplicate frames per dreamed frame and the saved video comes out
-    // minutes long, choppy and glitchy. captureStream(0) + requestFrame
-    // captures exactly one frame per draw, so the video is the right length
-    // and smooth. (Falls back to the live stream if requestFrame is missing.)
+    // ---- Output recorder (v1.63) ----
+    // The output video's timing must be the SOURCE's timing at the
+    // Process fps: frame i plays at i/fps seconds, so the saved video is
+    // exactly total/fps = the source duration. MediaRecorder +
+    // canvas.captureStream(0) + requestFrame cannot do this: it
+    // timestamps each frame by when it was produced (the dream takes
+    // ~0.3s a frame), so at 1024 the same 749 frames came out as a 223s
+    // slow-motion video (v1.61 file: 716 frames, 223.5s, ~0.3s between
+    // frames), and at 4K the recorder re-times them to ~24 fps, so the
+    // same run comes out 31s (v1.62). The code never set the output
+    // timing, so the duration was whatever the recorder did.
+    // WebCodecs VideoEncoder takes an explicit timestamp per frame, so
+    // the output is exactly `total` frames at exactly the Process fps —
+    // regardless of how slow the dream is or how big the canvas is.
+    // MediaRecorder is kept as a fallback if VideoEncoder is unavailable
+    // on this device (its output duration then follows the recorder, as
+    // before — the end status says which recorder was used).
     const chunks = [];
+    // Pick an H.264 codec this device's VideoEncoder supports. High
+    // profile level 5.1 handles 4K; fall back through Main and Baseline.
+    async function pickVeCodec() {
+      if (typeof VideoEncoder === "undefined" || typeof VideoEncoder.isConfigSupported !== "function") return null;
+      for (const c of ["avc1.640033", "avc1.4d0033", "avc1.4d0028", "avc1.42001f"]) {
+        try {
+          const r = await VideoEncoder.isConfigSupported({ codec: c, width: vd.w, height: vd.h, bitrate: videoBpsFor(vd), framerate: fps });
+          if (r && r.supported) return c;
+        } catch (e) {}
+      }
+      return null;
+    }
+    function startVideoEncoder(codec) {
+      veChunks.length = 0; veConfig = null; veError = null;
+      const enc = new VideoEncoder({
+        output: (chunk, meta) => {
+          if (meta && meta.decoderConfig && meta.decoderConfig.description && !veConfig) veConfig = meta.decoderConfig.description;   // avcC
+          try {
+            const buf = new Uint8Array(chunk.byteLength);
+            chunk.copyTo(buf);
+            veChunks.push({ data: buf, key: chunk.type === "key" });
+          } catch (e) { veError = veError || e; }
+        },
+        error: (e) => { veError = e; }
+      });
+      enc.configure({ codec, width: vd.w, height: vd.h, bitrate: videoBpsFor(vd), framerate: fps, latencyMode: "quality" });
+      return enc;
+    }
+    // Present the frame currently on outCv to the recorder, at its OUTPUT
+    // time: frame i plays at i/fps seconds. VideoEncoder: encode it with
+    // that exact timestamp. MediaRecorder: requestFrame (manual) or sleep.
+    async function presentFrame(i) {
+      if (recorderKind === "ve") {
+        const tsUs = Math.round(i * 1e6 / fps);
+        let vf = null;
+        try {
+          vf = new VideoFrame(outCv, { timestamp: tsUs, duration: Math.round(1e6 / fps) });
+          const needKey = (i === 0) || (i % Math.max(1, fps * 2) === 0);   // keyframe at the start and every ~2s
+          veEncoder.encode(vf, { keyFrame: needKey });
+        } catch (e) { veError = veError || e; throw e; }
+        finally { if (vf) { try { vf.close(); } catch (e) {} } }
+        // Backpressure: the hardware encoder eats 4K at 30 fps, so a
+        // ~3 fps input never piles up — but if it ever does, wait for it
+        // to drain instead of queuing unboundedly.
+        if (veEncoder.encodeQueueSize > 16) await veEncoder.flush();
+        return;
+      }
+      if (manualFrames) { vtrack.requestFrame(); await sleep(60); }
+      else await sleep(1000 / fps);
+    }
     function makeRecorder() {
       const s = outCv.captureStream(0);
       const vt = s.getVideoTracks()[0];
@@ -2184,29 +2321,56 @@ async function generateVideo() {
       r.start(200);
       return { rec: r, done: d, vtrack: vt, manualFrames: mf, mime: m };
     }
-    try {
-      const made = makeRecorder();
-      rec = made.rec; done = made.done; vtrack = made.vtrack; manualFrames = made.manualFrames; mime = made.mime;
-    } catch (e) {
-      if (Math.min(vd.w, vd.h) >= 2160) {
-        // 4K recording failed on this device — fall back to 1024 with a
-        // clear note, instead of failing the run. (The dream keeps its
-        // 192 size; only the output canvas shrinks.)
-        vd = videoDims(demux.width, demux.height, 1024);
-        dd = videoDreamDims(vd);
-        dreamCv.width = dd.w; dreamCv.height = dd.h;
-        outCv.width = vd.w; outCv.height = vd.h;
-        outNote = " · 4K recording is not supported on this device, fell back to 1024";
-        try {
-          const made = makeRecorder();
-          rec = made.rec; done = made.done; vtrack = made.vtrack; manualFrames = made.manualFrames; mime = made.mime;
-        } catch (e2) {
-          setVideoStatus("Could not start the video recorder on this device: " + (e2 && e2.message || e2), true);
+    // Try VideoEncoder first (exact timing). If it cannot be configured
+    // at this size, shrink the OUTPUT to 1024 and retry once (the dream
+    // stays 192; only the output shrinks). If that fails too, fall back
+    // to MediaRecorder (its 4K fallback below still applies).
+    const veAvailable = (typeof VideoEncoder === "function");
+    let veCodec = null;
+    if (veAvailable) { try { veCodec = await pickVeCodec(); } catch (e) {} }
+    if (veCodec) {
+      try { veEncoder = startVideoEncoder(veCodec); recorderKind = "ve"; recKindNote = " · VideoEncoder (" + veCodec + ")"; }
+      catch (e) { veEncoder = null; }
+    }
+    if (recorderKind !== "ve" && veAvailable && Math.min(vd.w, vd.h) >= 2160) {
+      vd = videoDims(demux.width, demux.height, 1024);
+      dd = videoDreamDims(vd);
+      dreamCv.width = dd.w; dreamCv.height = dd.h;
+      outCv.width = vd.w; outCv.height = vd.h;
+      outNote = " · 4K recording is not supported on this device, fell back to 1024";
+      try { veCodec = await pickVeCodec(); } catch (e) { veCodec = null; }
+      if (veCodec) {
+        try { veEncoder = startVideoEncoder(veCodec); recorderKind = "ve"; recKindNote = " · VideoEncoder (" + veCodec + ")"; }
+        catch (e) { veEncoder = null; }
+      }
+    }
+    if (recorderKind !== "ve") {
+      try {
+        const made = makeRecorder();
+        rec = made.rec; done = made.done; vtrack = made.vtrack; manualFrames = made.manualFrames; mime = made.mime;
+        recorderKind = "mr"; recKindNote = " · MediaRecorder";
+      } catch (e) {
+        if (Math.min(vd.w, vd.h) >= 2160) {
+          // 4K recording failed on this device — fall back to 1024 with a
+          // clear note, instead of failing the run. (The dream keeps its
+          // 192 size; only the output canvas shrinks.)
+          vd = videoDims(demux.width, demux.height, 1024);
+          dd = videoDreamDims(vd);
+          dreamCv.width = dd.w; dreamCv.height = dd.h;
+          outCv.width = vd.w; outCv.height = vd.h;
+          outNote = " · 4K recording is not supported on this device, fell back to 1024";
+          try {
+            const made = makeRecorder();
+            rec = made.rec; done = made.done; vtrack = made.vtrack; manualFrames = made.manualFrames; mime = made.mime;
+            recorderKind = "mr"; recKindNote = " · MediaRecorder";
+          } catch (e2) {
+            setVideoStatus("Could not start the video recorder on this device: " + (e2 && e2.message || e2), true);
+            return;
+          }
+        } else {
+          setVideoStatus("Could not start the video recorder on this device: " + (e && e.message || e), true);
           return;
         }
-      } else {
-        setVideoStatus("Could not start the video recorder on this device: " + (e && e.message || e), true);
-        return;
       }
     }
     // Live preview: show each dreamed frame in the square as it is made, so
@@ -2326,7 +2490,7 @@ async function generateVideo() {
     // recording stays in sync instead of stalling. The preview is what
     // tells you the run is alive — it must move on every frame, dreamed
     // or skipped.
-    async function showRawFrame(frame) {
+    async function showRawFrame(frame, idx) {
       try { dreamCv.getContext("2d").drawImage(frame, 0, 0, dd.w, dd.h); } catch (e) {}
       const dc = outCv.getContext("2d");
       dc.clearRect(0, 0, outCv.width, outCv.height);
@@ -2334,8 +2498,7 @@ async function generateVideo() {
       vHueTotal = (vHueTotal + (parseFloat($("videoHueSpin").value) || 0)) % 360;
       applyFx(outCv, videoFx(vHueTotal));
       pv.getContext("2d").drawImage(outCv, 0, 0, pv.width, pv.height);
-      if (manualFrames) { vtrack.requestFrame(); await sleep(60); }
-      else await sleep(1000 / fps);
+      await presentFrame(idx);   // record this raw frame at its output time (idx/fps)
     }
     let i = 0, consecFail = 0, curSrcTime = null;
     // Status helpers. The source time is the ACTUAL time in the video of
@@ -2454,7 +2617,7 @@ async function generateVideo() {
         if (!frameOk) {
           if (++consecFail >= 5) { stopReason = "Video dream failed: " + (frameErr && frameErr.message || frameErr) + " (frame " + (i + 1) + ")"; setVideoStatus(stopReason, true); break; }
           setVideoStatus("Frame " + (i + 1) + " failed — skipping it…");
-          await showRawFrame(frame);
+          await showRawFrame(frame, i);
           skipped++; i++; continue;
         }
         // Color spin + pop: the hue keeps cycling as the video plays, and
@@ -2467,8 +2630,7 @@ async function generateVideo() {
         prev = cur;
         setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel());
         setVideoBar((i + 1) / total);
-        if (manualFrames) { vtrack.requestFrame(); await sleep(60); }   // let the recorder grab this frame before the next draw
-        else await sleep(1000 / fps);
+        await presentFrame(i);   // record this dreamed frame at its output time (i/fps)
         await tf.nextFrame();
         dreamed++;
         consecFail = 0;
@@ -2481,10 +2643,30 @@ async function generateVideo() {
     // The output is exactly the video's frames — dreamed, or raw where a
     // frame had to be skipped — reassembled in order. No bookends: the
     // first and last frames are dreamed and recorded like every other.
-    try { if (rec) { rec.stop(); await done; } } catch (e) { console.error(e); }
-    rec = null;
-    videoOutBlob = new Blob(chunks, { type: mime || "video/webm" });
-    videoOutMime = mime;
+    // Finish the recorder. VideoEncoder: flush, then mux the chunks into
+    // an MP4 with exact 1/fps timing (the saved video is exactly
+    // total/fps = the source duration). MediaRecorder: stop and use its
+    // chunks as before.
+    if (recorderKind === "ve") {
+      try { if (veEncoder) { await veEncoder.flush(); veEncoder.close(); } } catch (e) { console.error(e); }
+      veEncoder = null;
+      if (veChunks.length && veConfig) {
+        try { videoOutBlob = muxMP4Video(veChunks, veConfig, vd.w, vd.h, fps); videoOutMime = "video/mp4"; }
+        catch (e) {
+          console.error(e);
+          if (!stopReason) { stopReason = "Video dream failed: could not write the output video (" + (e && e.message || e) + ")"; setVideoStatus(stopReason, true); }
+          videoOutBlob = new Blob([], { type: "video/mp4" }); videoOutMime = "video/mp4";
+        }
+      } else {
+        if (!stopReason) { stopReason = "Video dream failed: the video encoder produced no frames" + (veError ? " (" + (veError.message || veError) + ")" : "") + "."; setVideoStatus(stopReason, true); }
+        videoOutBlob = new Blob([], { type: "video/mp4" }); videoOutMime = "video/mp4";
+      }
+    } else {
+      try { if (rec) { rec.stop(); await done; } } catch (e) { console.error(e); }
+      rec = null;
+      videoOutBlob = new Blob(chunks, { type: mime || "video/webm" });
+      videoOutMime = mime;
+    }
     pv.style.display = "none"; $("vidOut").style.display = "";
     if (videoOutBlob.size) {
       if (videoOutUrl) URL.revokeObjectURL(videoOutUrl);
@@ -2497,7 +2679,8 @@ async function generateVideo() {
         const recNote = decoderRecoveries ? " · decoder recovered " + decoderRecoveries + "×" : "";
         const badNote = badSamples ? " · " + badSamples + " bad samples skipped" : "";
         const recErrNote = recError ? " · recorder error: " + (recError.message || recError.error || recError) : "";
-        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + recErrNote + outNote + ". Watch it above, or save it.");
+        const veErrNote = veError ? " · video encoder error: " + (veError.message || veError.error || veError) : "";
+        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + recErrNote + veErrNote + recKindNote + outNote + ". Watch it above, or save it.");
       } else if (stopReason) {
         // A failure stopped the run — the reason MUST be shown. Never
         // overwrite it with the bare "Stopped" line (v1.60 hid the
@@ -2522,6 +2705,8 @@ async function generateVideo() {
     console.error(e);
     setVideoStatus("Video dream failed: " + (e && e.message || e), true);
     try { if (rec) { rec.stop(); await done; } } catch (err) {}
+    try { if (veEncoder) { veEncoder.close(); } } catch (err) {}
+    veEncoder = null;
   } finally {
     if (prev) { try { prev.dispose(); } catch (e) {} prev = null; }
     if (held) { try { held.close(); } catch (e) {} held = null; }
