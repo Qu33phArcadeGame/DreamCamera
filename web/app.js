@@ -2093,9 +2093,79 @@ function demuxMP4(ab) {
 // timing is set explicitly. The file is non-fragmented (moov before
 // mdat), so this app's demuxer can read it back — a saved video can
 // be dreamed again.
+// v1.64: the VideoEncoder's decoderConfig.description is a BufferSource,
+// and Chrome delivers it as an ArrayBuffer — which has NO .length
+// property (it has .byteLength). v1.63 stored it directly as veConfig, so
+// muxMP4Video's `!avcC.length` check threw "no H.264 config (avcC)" even
+// though the config bytes were present — the run dreamed everything and
+// then failed at write time. Normalize any BufferSource to a Uint8Array.
+function toU8(buf) {
+  if (!buf) return null;
+  if (buf instanceof Uint8Array) return buf;
+  if (buf instanceof ArrayBuffer) return new Uint8Array(buf);
+  if (ArrayBuffer.isView(buf)) return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  return null;
+}
+// v1.64: build an avcC from the SPS/PPS NAL units in a keyframe chunk.
+// VideoEncoder emits avc1 chunks as length-prefixed (AVCC) NAL units, and
+// a keyframe normally starts with SPS (type 7) and PPS (type 8). Used when
+// the encoder's metadata description is missing or empty, so the run does
+// not depend on the platform surfacing the config in metadata.
+function avcCFromKeyChunk(data) {
+  if (!data || !data.length) return null;
+  let sps = null, pps = null;
+  // AVCC: 4-byte big-endian length + NAL. Annex B fallback: 00 00 01 / 00 00 00 01 start codes.
+  const isAnnexB = (data.length >= 4 && data[0] === 0 && data[1] === 0 && data[2] === 0 && data[3] === 1) ||
+    (data.length >= 3 && data[0] === 0 && data[1] === 0 && data[2] === 1);
+  if (isAnnexB) {
+    let at = 0;
+    while (at + 3 < data.length) {
+      let sc = -1, scLen = 0;
+      if (data[at] === 0 && data[at + 1] === 0 && data[at + 2] === 1) { sc = at; scLen = 3; }
+      else if (at + 4 < data.length && data[at] === 0 && data[at + 1] === 0 && data[at + 2] === 0 && data[at + 3] === 1) { sc = at; scLen = 4; }
+      if (sc < 0) { at++; continue; }
+      let end = sc + scLen;
+      while (end + 2 < data.length && !(data[end] === 0 && data[end + 1] === 0 && (data[end + 2] === 1 || (end + 3 < data.length && data[end + 2] === 0 && data[end + 3] === 1)))) end++;
+      const nal = data.subarray(sc + scLen, end);
+      if (nal.length) {
+        const type = nal[0] & 0x1f;
+        if (type === 7 && !sps) sps = nal;
+        else if (type === 8 && !pps) pps = nal;
+      }
+      if (sps && pps) break;
+      at = end;
+    }
+  } else {
+    let at = 0;
+    while (at + 4 <= data.length) {
+      const len = (data[at] << 24) | (data[at + 1] << 16) | (data[at + 2] << 8) | data[at + 3];
+      if (len <= 0 || at + 4 + len > data.length) break;
+      const nal = data.subarray(at + 4, at + 4 + len);
+      const type = nal[0] & 0x1f;
+      if (type === 7 && !sps) sps = nal;
+      else if (type === 8 && !pps) pps = nal;
+      if (sps && pps) break;
+      at += 4 + len;
+    }
+  }
+  if (!sps || !pps) return null;
+  // avcC: version(1) profile compat level 0xFF numSPS(0xE0|n) sps* numPPS pps*
+  const out = new Uint8Array(11 + sps.length + pps.length);
+  let o = 0;
+  out[o++] = 1; out[o++] = sps[1]; out[o++] = sps[2]; out[o++] = sps[3];
+  out[o++] = 0xFF;   // 6 reserved bits + lengthSizeMinusOne(3) = 4-byte NAL lengths
+  out[o++] = 0xE1;   // 3 reserved bits + numSPS(1)
+  out[o++] = (sps.length >> 8) & 0xff; out[o++] = sps.length & 0xff;
+  out.set(sps, o); o += sps.length;
+  out[o++] = 1;   // numPPS
+  out[o++] = (pps.length >> 8) & 0xff; out[o++] = pps.length & 0xff;
+  out.set(pps, o); o += pps.length;
+  return out;
+}
 function muxMP4Video(samples, avcC, width, height, fps) {
   const n = samples.length;
   if (!n) throw new Error("no frames to write");
+  avcC = toU8(avcC);   // v1.64: tolerate an ArrayBuffer config (Chrome's description type) — .length is only on the view
   if (!avcC || !avcC.length) throw new Error("no H.264 config (avcC)");
   // Timescale 90000: 90000/fps is exact for fps 8/12/16 (11250/7500/5625).
   const TS = 90000, DELTA = Math.round(TS / fps);
@@ -2274,11 +2344,27 @@ async function generateVideo() {
       veChunks.length = 0; veConfig = null; veError = null;
       const enc = new VideoEncoder({
         output: (chunk, meta) => {
-          if (meta && meta.decoderConfig && meta.decoderConfig.description && !veConfig) veConfig = meta.decoderConfig.description;   // avcC
+          // v1.64: capture the avcC robustly. The description is a
+          // BufferSource (Chrome gives an ArrayBuffer — no .length), so
+          // normalize it; only a NON-EMPTY config counts, and a later
+          // keyframe may still supply one, so keep looking until one is
+          // found. If the metadata has none, build it from the
+          // keyframe's own SPS/PPS.
+          if (!veConfig || !veConfig.length) {
+            if (meta && meta.decoderConfig && meta.decoderConfig.description) {
+              const d = toU8(meta.decoderConfig.description);
+              if (d && d.length) veConfig = d;
+            }
+          }
           try {
             const buf = new Uint8Array(chunk.byteLength);
             chunk.copyTo(buf);
-            veChunks.push({ data: buf, key: chunk.type === "key" });
+            const isKey = chunk.type === "key";
+            veChunks.push({ data: buf, key: isKey });
+            if (isKey && (!veConfig || !veConfig.length)) {
+              const built = avcCFromKeyChunk(buf);
+              if (built) veConfig = built;
+            }
           } catch (e) { veError = veError || e; }
         },
         error: (e) => { veError = e; }
@@ -2320,6 +2406,52 @@ async function generateVideo() {
       const d = new Promise(res => r.onstop = res);
       r.start(200);
       return { rec: r, done: d, vtrack: vt, manualFrames: mf, mime: m };
+    }
+    // v1.64: after the first VideoEncoder frame, prove the encoder gave
+    // us a usable H.264 config (avcC) BEFORE dreaming the rest. v1.63
+    // only discovered a missing config at mux time, failing the whole
+    // run after all the dreaming. If there is still no usable avcC
+    // after flushing the first keyframe, abandon VideoEncoder and fall
+    // back to MediaRecorder (which worked in v1.62) — re-presenting
+    // frame 0 — instead of failing at the end. Returns true if
+    // recording can continue, false if no recorder could be started.
+    async function ensureVeAvcC() {
+      if (recorderKind !== "ve") return true;
+      try { if (veEncoder) await veEncoder.flush(); } catch (e) {}
+      if (!veChunks.length) await sleep(300);   // let the output callback land
+      if (veConfig && veConfig.length) return true;
+      for (const c of veChunks) {
+        if (!c.key) continue;
+        const built = avcCFromKeyChunk(c.data);
+        if (built) { veConfig = built; return true; }
+      }
+      // No config from this encoder — fall back to MediaRecorder now,
+      // while only frame 0 has been encoded. Discard the VE chunks;
+      // frame 0 is re-recorded via MediaRecorder below. recorderKind
+      // stays "ve" until MediaRecorder actually starts.
+      try { if (veEncoder) veEncoder.close(); } catch (e) {}
+      veEncoder = null; veChunks.length = 0; veConfig = null; veError = null;
+      const tryMr = () => {
+        const made = makeRecorder();
+        rec = made.rec; done = made.done; vtrack = made.vtrack; manualFrames = made.manualFrames; mime = made.mime;
+        recorderKind = "mr"; recKindNote = " · MediaRecorder (VideoEncoder gave no H.264 config)";
+        return true;
+      };
+      let mrStarted = false;
+      try { mrStarted = tryMr(); } catch (e) {
+        if (Math.min(vd.w, vd.h) >= 2160) {
+          vd = videoDims(demux.width, demux.height, 1024);
+          dd = videoDreamDims(vd);
+          dreamCv.width = dd.w; dreamCv.height = dd.h;
+          outCv.width = vd.w; outCv.height = vd.h;
+          pv.width = vd.w; pv.height = vd.h;
+          outNote = " · 4K recording is not supported on this device, fell back to 1024";
+          try { mrStarted = tryMr(); } catch (e2) { mrStarted = false; }
+        }
+      }
+      if (!mrStarted) return false;
+      try { await presentFrame(0); } catch (e) {}   // re-record frame 0 (still on outCv) via MediaRecorder
+      return true;
     }
     // Try VideoEncoder first (exact timing). If it cannot be configured
     // at this size, shrink the OUTPUT to 1024 and retry once (the dream
@@ -2631,6 +2763,17 @@ async function generateVideo() {
         setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel());
         setVideoBar((i + 1) / total);
         await presentFrame(i);   // record this dreamed frame at its output time (i/fps)
+        if (i === 0 && recorderKind === "ve") {
+          // v1.64: prove the encoder gave us an avcC now, before
+          // dreaming the rest — if it did not, ensureVeAvcC falls back
+          // to MediaRecorder (re-presenting frame 0). A failed
+          // fallback stops the run with a clear reason.
+          if (!(await ensureVeAvcC())) {
+            stopReason = "Video dream failed: could not start a video recorder on this device (VideoEncoder gave no H.264 config and MediaRecorder failed to start).";
+            setVideoStatus(stopReason, true);
+            break;
+          }
+        }
         await tf.nextFrame();
         dreamed++;
         consecFail = 0;
