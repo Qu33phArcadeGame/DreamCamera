@@ -1755,14 +1755,46 @@ function videoDims(vw, vh, shortOverride) {
 // The video DREAM runs smaller than the video itself: one gradient step
 // through a free-size model (v1, the default) at 512×1109 is a huge GPU
 // allocation in the Android WebView and loses the device ("[Device] is
-// lost"). The dream is capped to a 192 short side (v1.59, was 256): the
-// dream cost scales with pixels, and 192 is 1.83x faster than 256
-// (measured against the real Inception v1 model — 8.7s vs 16.0s a frame
-// on WASM; on the phone's WebGPU that is ~6s a frame down to ~3.3s), and
-// the dream stays clearly visible at 192 (mean change 0.09 by frame 26,
-// same as at 256). The output video keeps the size from Output size —
-// the dreamed frame is upscaled onto it.
-const VIDEO_DREAM_MAX = 192;
+// lost"). v1.65: the dream size is a setting now (Dream detail) — 192 is
+// fast, 256 is the default (sharper, ~1.8x the time of 192 — measured
+// against the real Inception v1 model), 384 is max detail (~4x the time
+// of 192). The output video keeps the size from Output size — the
+// dreamed frame is upscaled onto it.
+const VIDEO_DREAM_MAX = 192;   // the fast option / floor — the setting picks the actual cap
+function videoDreamDetail() {
+  const v = parseInt(($("videoDreamDetail") && $("videoDreamDetail").value) || "256", 10);
+  return [192, 256, 384].includes(v) ? v : 256;
+}
+// v1.65: depth/detail separation. A per-pixel mask of how much local
+// detail a frame has — |frame - blurred frame|, smoothed and normalized
+// to [0,1] per frame, then DILATED so whole objects are covered, not
+// just their outlines: a bare edge map is nearly all thin lines (a
+// Flappy Bird frame is 95% flat, and a pipe's green interior is as flat
+// as the sky), so without dilation only the outlines would dream hard
+// and the object interiors would be damped like the sky. The dilation
+// runs at quarter resolution (downsample, max-pool, upsample) so it is
+// cheap: a 13-wide max-pool at 1/4 scale spreads ~24px at full scale,
+// enough to cover a pipe interior at 256 dream size, and the upsample
+// keeps the mask smooth. Edge-rich objects (bird, pipes, score, text)
+// score near 1; flat background (sky) scores near 0. A true depth model
+// was considered and rejected for video: it would need a new ~20MB model
+// bundled plus a full inference per frame, and on flat 2D game art a
+// photo-trained depth map is mostly noise — the edges already mark the
+// objects. This mask is a few pool ops on the dream-size tensor
+// (milliseconds), needs no new model, and tracks the objects as they move.
+function videoDetailMask(t) {
+  return tf.tidy(() => {
+    const blur = tf.avgPool(t, 5, 1, "same");
+    const det = tf.abs(tf.sub(t, blur)).mean(3, true);   // [1,H,W,1] detail
+    const sm = tf.avgPool(det, 5, 1, "same");            // smooth so the mask does not speckle
+    const mx = tf.max(sm);
+    const m = sm.div(mx.add(1e-6)).clipByValue(0, 1);
+    const h = m.shape[1], w = m.shape[2];
+    const small = tf.avgPool(m, 4, 4, "same");           // quarter resolution
+    const dil = tf.maxPool(small, 13, 1, "same");        // dilate ~24px at full scale
+    return tf.image.resizeBilinear(dil, [h, w]).clipByValue(0, 1);
+  });
+}
 // Carryover: one frame dreamed on its own changes by ~0.01% (a single
 // dream step moves pixels ~0.025/255), so it looks identical to the raw
 // frame — the run "skips" every frame to the eye. Blending in half of
@@ -1770,7 +1802,7 @@ const VIDEO_DREAM_MAX = 192;
 // way Photos builds up over a run) so it becomes clearly visible by ~frame 7.
 const FRAME_WEAVE = 0.5;
 function videoDreamDims(vd, max) {
-  const cap = max || VIDEO_DREAM_MAX;
+  const cap = max || videoDreamDetail();   // v1.65: the Dream detail setting (256 default); an explicit max (e.g. the 128 fallback) still wins
   const short = Math.min(vd.w, vd.h);
   if (short <= cap) return { w: vd.w, h: vd.h };
   const s = cap / short;
@@ -2716,9 +2748,27 @@ async function generateVideo() {
             }
             // On the fallback engine the dream is much slower: one step,
             // so the run can still finish.
-            const steps = engineSwitched ? 1 : (parseInt($("videoSteps").value, 10) || 3);
+            const steps = engineSwitched ? 1 : (parseInt($("videoSteps").value, 10) || 4);
             const pulseF = 1 + (parseFloat($("videoPulse").value) || 0) * Math.sin(i * 0.25);   // Pulse: the dream strength breathes, one full breath every ~25 frames
+            // v1.65: depth separation. The mask is computed from this
+            // frame's pre-dream tensor (after weave + zoom, so it aligns
+            // with the dream), and the dreamed frame is blended back
+            // toward the pre-dream frame where the mask is low — edges
+            // and objects get the full dream, flat sky gets a gentler
+            // one, so objects stand out instead of everything getting
+            // the same wash. Depth 0 turns it off (old behaviour).
+            const depthAmt = parseFloat($("videoDepth").value) || 0;
+            let rawKeep = null, dmask = null;
+            if (depthAmt > 0) { rawKeep = cur.clone(); dmask = videoDetailMask(cur); }
             cur = dreamSteps(cur, videoLr() * pulseF, steps, true);
+            if (depthAmt > 0 && rawKeep && dmask) {
+              const blended = tf.tidy(() => {
+                const vis = dmask.mul(depthAmt).add(1 - depthAmt);   // [1-depth, 1]: flat keeps 1-depth of the dream
+                return cur.mul(vis).add(rawKeep.mul(tf.scalar(1).sub(vis)));
+              });
+              cur.dispose(); rawKeep.dispose(); dmask.dispose();
+              cur = blended;
+            }
             await tensorToCanvas(cur, outCv);   // upscales the small dream onto the vd output canvas
             frameOk = true;
           } catch (e) {
@@ -2823,7 +2873,7 @@ async function generateVideo() {
         const badNote = badSamples ? " · " + badSamples + " bad samples skipped" : "";
         const recErrNote = recError ? " · recorder error: " + (recError.message || recError.error || recError) : "";
         const veErrNote = veError ? " · video encoder error: " + (veError.message || veError.error || veError) : "";
-        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + recErrNote + veErrNote + recKindNote + outNote + ". Watch it above, or save it.");
+        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · dream " + dd.w + "×" + dd.h + " · depth " + (parseFloat($("videoDepth").value) || 0).toFixed(2) + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + recErrNote + veErrNote + recKindNote + outNote + ". Watch it above, or save it.");
       } else if (stopReason) {
         // A failure stopped the run — the reason MUST be shown. Never
         // overwrite it with the bare "Stopped" line (v1.60 hid the
@@ -2873,6 +2923,7 @@ function initVideoTab() {
   buildVideoModelSelect();
   $("videoSteps").addEventListener("input", () => { $("videoStepsVal").textContent = $("videoSteps").value; });
   $("videoLr").addEventListener("input", () => { $("videoLrVal").textContent = (+$("videoLr").value).toFixed(3); });
+  $("videoDepth").addEventListener("input", () => { $("videoDepthVal").textContent = (+$("videoDepth").value).toFixed(2); });
   $("videoZoomCycles").addEventListener("input", () => { $("videoZoomCyclesVal").textContent = $("videoZoomCycles").value; });
   $("videoZoomAmount").addEventListener("input", () => { $("videoZoomAmountVal").textContent = (+$("videoZoomAmount").value).toFixed(2) + "×"; });
   $("videoHueSpin").addEventListener("input", () => { $("videoHueSpinVal").textContent = (+$("videoHueSpin").value).toFixed(1); });
