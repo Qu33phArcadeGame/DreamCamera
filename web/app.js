@@ -2337,12 +2337,45 @@ async function generateVideo() {
   let dreamed = 0, skipped = 0, engineSwitched = null, videoDone = false;
   let decoder = null, held = null, heldTsUs = -1, decodedFrames = 0, reusedFrames = 0;
   let stopReason = null, decoderRecoveries = 0, badSamples = 0;   // v1.61: stopReason is WHY the run stopped — the post-loop status must never hide it again (v1.60 overwrote the decoder-error message with a bare "Stopped")
+  // v1.67: Ramp up state (declared here so the finally block can restore
+  // the sliders and free the noise seed). The sliders are captured as the
+  // MAX values once at run start; the ramp is computed from those stored
+  // values, never from the sliders once they are being driven — otherwise
+  // the ramp would compound on itself.
+  let rampOnRun = false, rampStepsMax = 4, rampLrMax = 0.06, rampNoise = null;
+  // v1.67: drive the Steps / Dream strength sliders so the ramp is visible
+  // while it runs (Coby: "make it so i can see the sliders go up").
+  function driveRampSliders(steps, lr) {
+    try {
+      const sEl = $("videoSteps"), lEl = $("videoLr");
+      if (sEl) { sEl.value = String(steps); const v = $("videoStepsVal"); if (v) v.textContent = String(steps); }
+      if (lEl) { lEl.value = String(lr); const v = $("videoLrVal"); if (v) v.textContent = (+lr).toFixed(3); }
+    } catch (e) {}
+  }
+  function restoreRampSliders() {
+    if (!rampOnRun) return;
+    try {
+      const sEl = $("videoSteps"), lEl = $("videoLr");
+      if (sEl) { sEl.value = String(rampStepsMax); const v = $("videoStepsVal"); if (v) v.textContent = String(rampStepsMax); }
+      if (lEl) { lEl.value = String(rampLrMax); const v = $("videoLrVal"); if (v) v.textContent = (+rampLrMax).toFixed(3); }
+    } catch (e) {}
+  }
   try {
     const dur = demux.duration;
     const fps = parseInt($("videoFps").value, 10) || 12;
     const total = Math.max(1, Math.floor(dur * fps));   // every frame of the video, however long — no length cap, no frame cap
     let vd = videoDims(demux.width, demux.height);   // output size (2160 = 4K by default)
     let dd = videoDreamDims(vd);   // dream size (capped) — the output stays vd; let so the fallback can shrink it further
+    // v1.67: capture the ramp max values + one fixed noise seed per run.
+    // Flat content has no gradient for the dream to grab (v1.67 diagnosis:
+    // a near-binary label sits at the clip bounds, so the per-frame dream
+    // is ~0.0005 and the weave can only double it — invisible). The seed
+    // gives flat areas texture to amplify; one pattern per run so the
+    // weave accumulates it coherently instead of averaging random noise away.
+    rampOnRun = videoRampOn();
+    rampStepsMax = parseInt($("videoSteps").value, 10) || 4;
+    rampLrMax = videoLr();
+    if (rampOnRun) { try { if (rampNoise) rampNoise.dispose(); } catch (e) {} rampNoise = tf.randomUniform([1, dd.h, dd.w, 3], -1, 1); }
     const dreamCv = document.createElement("canvas"); dreamCv.width = dd.w; dreamCv.height = dd.h;
     const outCv = document.createElement("canvas"); outCv.width = vd.w; outCv.height = vd.h;   // what the recorder + preview show
     let outNote = "";   // set if 4K recording fell back to 1024 — the end status must say so
@@ -2745,12 +2778,37 @@ async function generateVideo() {
         for (let attempt = 0; attempt < 2 && !frameOk && videoRunning; attempt++) {
           try {
             cur = canvasToTensor(dreamCv);
-            // Carryover: blend in half of the previous dreamed frame, so
+            // v1.67: Ramp up values for this frame (from the stored maxes,
+            // never from the sliders once they are being driven). The
+            // sliders set the MAX (end) values; with the toggle on, the
+            // dream builds from a gentle start to crazy at the end,
+            // evenly spaced (p = i/(total-1)); off = the sliders apply
+            // to every frame, as before. On the fallback engine the dream
+            // is much slower: one step, so the run can still finish.
+            // Floor: never 0 steps / 0 lr — 1 step and the slider minimum
+            // lr, so the weave seeds from frame 0 (v1.66 left 12 frames
+            // at 0 steps on a 92-frame video and the weave had nothing
+            // to amplify). Weave ramps 0.5 -> 0.9, boost 1x -> 8x, the
+            // noise seed 0 -> 5, and the depth washout eases to 30% —
+            // together they make flat content actually dream instead of
+            // saturating at ~0.0005 (v1.67 diagnosis).
+            const rp = rampOnRun ? videoRampP(i, total) : 1;
+            const steps = engineSwitched ? 1 : Math.max(1, Math.round(rampStepsMax * rp));
+            const lr = Math.max(0.01, rampLrMax * rp);
+            rampSteps = steps; rampLr = lr;
+            if (rampOnRun) driveRampSliders(steps, lr);
+            const weaveEff = rampOnRun ? 0.5 + 0.4 * rp : FRAME_WEAVE;
+            const boostF = rampOnRun ? 1 + 7 * rp : 1;
+            const noiseAmp = rampOnRun ? 5 * rp : 0;
+            const depthAmt = parseFloat($("videoDepth").value) || 0;
+            const depthEff = rampOnRun ? depthAmt * (1 - 0.7 * rp) : depthAmt;
+            const pulseF = 1 + (parseFloat($("videoPulse").value) || 0) * Math.sin(i * 0.25);   // Pulse: the dream strength breathes, one full breath every ~25 frames
+            // Carryover: blend in some of the previous dreamed frame, so
             // the dream builds up across frames and is visible (v1.56 fix).
             // prev is null on frame 0, disposed on a backend switch, and
             // untouched on a skipped frame.
             if (prev) {
-              const w = tf.tidy(() => cur.mul(1 - FRAME_WEAVE).add(prev.mul(FRAME_WEAVE)));
+              const w = tf.tidy(() => cur.mul(1 - weaveEff).add(prev.mul(weaveEff)));
               cur.dispose(); cur = w;
             }
             // Zoom path: the zoom is driven by frame position, so it actually
@@ -2764,19 +2822,6 @@ async function generateVideo() {
               const mag = zPath === "inout" ? 1 + (maxMag - 1) * (1 - Math.cos(2 * Math.PI * cycles * p)) / 2 : 1 + (maxMag - 1) * p;
               const z = zoomCrop(cur, 1 / mag, 0, 0, 0); cur.dispose(); cur = z;
             }
-            // v1.66: Ramp up — the Steps / Dream strength sliders set
-            // the MAX (end) values. With the toggle on, steps + strength
-            // ramp from 0 at frame 0 to the set max at the last frame,
-            // evenly spaced (p = i/(total-1)); off = the sliders apply
-            // to every frame, as before. On the fallback engine the
-            // dream is much slower: one step, so the run can still
-            // finish (strength still ramps).
-            const rp = videoRampOn() ? videoRampP(i, total) : 1;
-            const stepsMax = parseInt($("videoSteps").value, 10) || 4;
-            const steps = engineSwitched ? 1 : Math.max(0, Math.round(stepsMax * rp));
-            const lr = videoLr() * rp;
-            rampSteps = steps; rampLr = lr;
-            const pulseF = 1 + (parseFloat($("videoPulse").value) || 0) * Math.sin(i * 0.25);   // Pulse: the dream strength breathes, one full breath every ~25 frames
             // v1.65: depth separation. The mask is computed from this
             // frame's pre-dream tensor (after weave + zoom, so it aligns
             // with the dream), and the dreamed frame is blended back
@@ -2784,17 +2829,39 @@ async function generateVideo() {
             // and objects get the full dream, flat sky gets a gentler
             // one, so objects stand out instead of everything getting
             // the same wash. Depth 0 turns it off (old behaviour).
-            const depthAmt = parseFloat($("videoDepth").value) || 0;
+            // rawKeep is also the base for the v1.67 boost, so it is kept
+            // whenever the boost is on even if depth is 0; it stays clean
+            // (taken before the noise seed) so the blend never
+            // reintroduces raw noise grain.
             let rawKeep = null, dmask = null;
-            if (depthAmt > 0) { rawKeep = cur.clone(); dmask = videoDetailMask(cur); }
+            if (depthEff > 0 || boostF > 1) rawKeep = cur.clone();
+            if (depthEff > 0) dmask = videoDetailMask(cur);
+            // v1.67 noise seed (ramp only): one fixed pattern per run,
+            // added just before the dream so flat areas have texture to
+            // amplify. Without it the label's flat white has no gradient
+            // and the dream stays ~0.0005.
+            if (noiseAmp > 0 && rampNoise) {
+              const n = tf.tidy(() => cur.add(rampNoise.mul(noiseAmp)));
+              cur.dispose(); cur = n;
+            }
             cur = dreamSteps(cur, lr * pulseF, steps, true);
-            if (depthAmt > 0 && rawKeep && dmask) {
+            // v1.67 boost (ramp only): amplify the dream delta so the end
+            // is crazy. The delta is measured from the clean pre-dream
+            // tensor, so the boost grows the dream, not the noise.
+            if (boostF > 1 && rawKeep) {
+              const b = tf.tidy(() => rawKeep.add(cur.sub(rawKeep).mul(boostF)).clipByValue(P.lo, P.hi));
+              cur.dispose(); cur = b;
+            }
+            if (depthEff > 0 && rawKeep && dmask) {
               const blended = tf.tidy(() => {
-                const vis = dmask.mul(depthAmt).add(1 - depthAmt);   // [1-depth, 1]: flat keeps 1-depth of the dream
+                const vis = dmask.mul(depthEff).add(1 - depthEff);   // [1-depth, 1]: flat keeps 1-depth of the dream
                 return cur.mul(vis).add(rawKeep.mul(tf.scalar(1).sub(vis)));
               });
               cur.dispose(); rawKeep.dispose(); dmask.dispose();
               cur = blended;
+            } else {
+              if (rawKeep) { try { rawKeep.dispose(); } catch (e) {} }
+              if (dmask) { try { dmask.dispose(); } catch (e) {} }
             }
             await tensorToCanvas(cur, outCv);   // upscales the small dream onto the vd output canvas
             frameOk = true;
@@ -2812,6 +2879,7 @@ async function generateVideo() {
               consecFail = 0;
               // Fallback is much slower: dream smaller so the run can still finish.
               dd = videoDreamDims(vd, 128);
+              if (rampOnRun) { try { if (rampNoise) rampNoise.dispose(); } catch (e) {} rampNoise = tf.randomUniform([1, dd.h, dd.w, 3], -1, 1); }   // v1.67: the noise seed must match the new dream size
               dreamCv.width = dd.w; dreamCv.height = dd.h;
               dreamCv.getContext("2d").drawImage(frame, 0, 0, dd.w, dd.h);   // re-draw the same decoded frame at the new size (resizing clears the canvas)
               // Back to a "Dreaming video…" status so the per-frame timer
@@ -2929,6 +2997,8 @@ async function generateVideo() {
     veEncoder = null;
   } finally {
     if (prev) { try { prev.dispose(); } catch (e) {} prev = null; }
+    if (rampNoise) { try { rampNoise.dispose(); } catch (e) {} rampNoise = null; }   // v1.67: free the per-run noise seed
+    restoreRampSliders();   // v1.67: the sliders go back to the user's set max values
     if (held) { try { held.close(); } catch (e) {} held = null; }
     if (decoder) { try { decoder.close(); } catch (e) {} decoder = null; }
     videoRunning = false;
