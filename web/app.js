@@ -1838,6 +1838,14 @@ function buildVideoModelSelect() {
 // The video tab's own dream strength (learning rate). The Photos tab's lr
 // slider is a different control — the generator is self-contained.
 function videoLr() { return parseFloat($("videoLr").value) || 0.04; }
+// v1.66: Ramp up — the Steps / Dream strength sliders set the MAX (end)
+// values. With the toggle on, both ramp from 0 at frame 0 to the set max
+// at the last frame, evenly spaced. Persisted like the video model.
+const VIDEO_RAMP_KEY = "dreamcamera_video_ramp";
+function videoRampOn() { const el = $("videoRamp"); return !!(el && el.checked); }
+// Ramp progress for frame i of total — 0 at frame 0, 1 at the last
+// frame; a 1-frame video dreams at the max.
+function videoRampP(i, total) { return total > 1 ? i / (total - 1) : 1; }
 function updateVideoUI() {
   $("videoDreamBtn").disabled = videoRunning || !videoMeta || busy || zooming;
   $("videoStopBtn").disabled = !videoRunning;
@@ -2664,7 +2672,7 @@ async function generateVideo() {
       pv.getContext("2d").drawImage(outCv, 0, 0, pv.width, pv.height);
       await presentFrame(idx);   // record this raw frame at its output time (idx/fps)
     }
-    let i = 0, consecFail = 0, curSrcTime = null;
+    let i = 0, consecFail = 0, curSrcTime = null, rampSteps = null, rampLr = null;
     // Status helpers. The source time is the ACTUAL time in the video of
     // the frame being dreamed — the decoded frame's own timestamp from
     // the decoder, not a playhead — so the frame number and the video
@@ -2672,6 +2680,15 @@ async function generateVideo() {
     // run names its engine.
     const engLabel = () => { try { const b = tf.getBackend(); return b ? " · engine: " + (LABEL[b] || b) : ""; } catch (e) { return ""; } };
     const srcTimeNote = () => (curSrcTime != null ? " · " + curSrcTime.toFixed(1) + "s in the video" : "");
+    // v1.66: Ramp up note — the percent is always current (p =
+    // i/(total-1)); the steps/strength appear once this frame's dream
+    // has been computed (null before that, so no stale values from the
+    // previous frame are ever shown).
+    const rampNote = () => {
+      if (!videoRampOn()) return "";
+      const pct = Math.round(videoRampP(i, total) * 100);
+      return " · ramp " + pct + "%" + (rampSteps != null ? " · " + rampSteps + " steps · " + rampLr.toFixed(3) : "");
+    };
     // The frame loop: every frame either dreams and advances, or fails
     // cleanly. A frame gets at most two attempts — the first, and one
     // retry after a one-time backend switch. EVERY failure counts (decode,
@@ -2681,6 +2698,7 @@ async function generateVideo() {
     // you can always tell it is working and which frame it is on.
     while (i < total && videoRunning) {
       await sleep(0);   // let the UI breathe between frames — one long dream used to freeze the app
+      rampSteps = null; rampLr = null;   // v1.66: this frame's ramp values, set when the dream runs — never show the previous frame's
       const frameT0 = performance.now();
       const frameTimer = setInterval(() => {
         // Don't overwrite a switch/skip/fail message — those are the
@@ -2688,10 +2706,10 @@ async function generateVideo() {
         const cur = $("videoStatus").textContent || "";
         if (cur.indexOf("Dreaming video…") !== 0) return;
         const s = Math.round((performance.now() - frameT0) / 1000);
-        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + " · " + s + "s on this frame" + engLabel());
+        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + " · " + s + "s on this frame" + engLabel() + rampNote());
       }, 2000);
       try {
-        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel());
+        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel() + rampNote());
         const targetT = Math.min(i / fps, Math.max(0, dur - 0.001));
         // The decoder hands us the frame AT targetT — no seek, no
         // compositor, no stale frame possible.
@@ -2720,7 +2738,7 @@ async function generateVideo() {
         curSrcTime = got.tsUs / 1e6;   // the ACTUAL time of the decoded frame — the decoder's timestamp, not a playhead
         // The frame is confirmed at curSrcTime — show the frame number and
         // the real video time together, so the run's position is never a mystery.
-        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel());
+        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel() + rampNote());
         dreamCv.getContext("2d").drawImage(frame, 0, 0, dd.w, dd.h);   // dream small; the output stays vd
         if (i === 0) { try { pv.getContext("2d").drawImage(dreamCv, 0, 0, pv.width, pv.height); } catch (e) {} }   // first frame visible right away
         let cur = null, frameOk = false, frameErr = null, abortMsg = null;
@@ -2746,9 +2764,18 @@ async function generateVideo() {
               const mag = zPath === "inout" ? 1 + (maxMag - 1) * (1 - Math.cos(2 * Math.PI * cycles * p)) / 2 : 1 + (maxMag - 1) * p;
               const z = zoomCrop(cur, 1 / mag, 0, 0, 0); cur.dispose(); cur = z;
             }
-            // On the fallback engine the dream is much slower: one step,
-            // so the run can still finish.
-            const steps = engineSwitched ? 1 : (parseInt($("videoSteps").value, 10) || 4);
+            // v1.66: Ramp up — the Steps / Dream strength sliders set
+            // the MAX (end) values. With the toggle on, steps + strength
+            // ramp from 0 at frame 0 to the set max at the last frame,
+            // evenly spaced (p = i/(total-1)); off = the sliders apply
+            // to every frame, as before. On the fallback engine the
+            // dream is much slower: one step, so the run can still
+            // finish (strength still ramps).
+            const rp = videoRampOn() ? videoRampP(i, total) : 1;
+            const stepsMax = parseInt($("videoSteps").value, 10) || 4;
+            const steps = engineSwitched ? 1 : Math.max(0, Math.round(stepsMax * rp));
+            const lr = videoLr() * rp;
+            rampSteps = steps; rampLr = lr;
             const pulseF = 1 + (parseFloat($("videoPulse").value) || 0) * Math.sin(i * 0.25);   // Pulse: the dream strength breathes, one full breath every ~25 frames
             // v1.65: depth separation. The mask is computed from this
             // frame's pre-dream tensor (after weave + zoom, so it aligns
@@ -2760,7 +2787,7 @@ async function generateVideo() {
             const depthAmt = parseFloat($("videoDepth").value) || 0;
             let rawKeep = null, dmask = null;
             if (depthAmt > 0) { rawKeep = cur.clone(); dmask = videoDetailMask(cur); }
-            cur = dreamSteps(cur, videoLr() * pulseF, steps, true);
+            cur = dreamSteps(cur, lr * pulseF, steps, true);
             if (depthAmt > 0 && rawKeep && dmask) {
               const blended = tf.tidy(() => {
                 const vis = dmask.mul(depthAmt).add(1 - depthAmt);   // [1-depth, 1]: flat keeps 1-depth of the dream
@@ -2810,7 +2837,7 @@ async function generateVideo() {
         pv.getContext("2d").drawImage(outCv, 0, 0, pv.width, pv.height);   // live preview: the new frame, in order
         if (prev) prev.dispose();
         prev = cur;
-        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel());
+        setVideoStatus("Dreaming video… frame " + (i + 1) + " of " + total + srcTimeNote() + engLabel() + rampNote());
         setVideoBar((i + 1) / total);
         await presentFrame(i);   // record this dreamed frame at its output time (i/fps)
         if (i === 0 && recorderKind === "ve") {
@@ -2873,7 +2900,7 @@ async function generateVideo() {
         const badNote = badSamples ? " · " + badSamples + " bad samples skipped" : "";
         const recErrNote = recError ? " · recorder error: " + (recError.message || recError.error || recError) : "";
         const veErrNote = veError ? " · video encoder error: " + (veError.message || veError.error || veError) : "";
-        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · dream " + dd.w + "×" + dd.h + " · depth " + (parseFloat($("videoDepth").value) || 0).toFixed(2) + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + recErrNote + veErrNote + recKindNote + outNote + ". Watch it above, or save it.");
+        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · dream " + dd.w + "×" + dd.h + " · depth " + (parseFloat($("videoDepth").value) || 0).toFixed(2) + (videoRampOn() ? " · ramp on" : "") + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + recErrNote + veErrNote + recKindNote + outNote + ". Watch it above, or save it.");
       } else if (stopReason) {
         // A failure stopped the run — the reason MUST be shown. Never
         // overwrite it with the bare "Stopped" line (v1.60 hid the
@@ -2921,6 +2948,8 @@ function initVideoTab() {
     else setStatus("Live is in the DreamCamera app");
   };
   buildVideoModelSelect();
+  try { $("videoRamp").checked = localStorage.getItem(VIDEO_RAMP_KEY) === "1"; } catch (e) {}
+  $("videoRamp").addEventListener("change", () => { try { localStorage.setItem(VIDEO_RAMP_KEY, $("videoRamp").checked ? "1" : "0"); } catch (e) {} });
   $("videoSteps").addEventListener("input", () => { $("videoStepsVal").textContent = $("videoSteps").value; });
   $("videoLr").addEventListener("input", () => { $("videoLrVal").textContent = (+$("videoLr").value).toFixed(3); });
   $("videoDepth").addEventListener("input", () => { $("videoDepthVal").textContent = (+$("videoDepth").value).toFixed(2); });
