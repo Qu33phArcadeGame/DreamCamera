@@ -2379,6 +2379,21 @@ async function generateVideo() {
     rampOnRun = videoRampOn();
     rampStepsMax = parseInt($("videoSteps").value, 10) || 4;
     rampLrMax = videoLr();
+    // v1.69: effective ramp end. The sliders ARE the max, so if the max is
+    // at (or a hair above) the slider minimum the floor equals the max and
+    // the sliders physically cannot move — Coby's v1.67 screenshot showed
+    // exactly that (1 / 0.010, thumb stuck at the left all run). If the max
+    // would give the sliders under a tenth of their track to climb, the
+    // ramp uses the app defaults (4 / 0.060) as the end instead, so the
+    // sliders visibly climb from the floor and the dream actually builds
+    // to "crazy by the end". The user's set values are still the ones
+    // restored after the run (restoreRampSliders), and the end status
+    // names the end used, so nothing is changed silently.
+    let rampStepsEnd = rampStepsMax, rampLrEnd = rampLrMax, rampEndRaised = false;
+    if (rampOnRun) {
+      if (rampStepsMax <= 1) { rampStepsEnd = 4; rampEndRaised = true; }
+      if (rampLrMax <= 0.015) { rampLrEnd = 0.06; rampEndRaised = true; }
+    }
     if (rampOnRun) { try { if (rampNoise) rampNoise.dispose(); } catch (e) {} rampNoise = tf.randomUniform([1, dd.h, dd.w, 3], -1, 1); }
     const dreamCv = document.createElement("canvas"); dreamCv.width = dd.w; dreamCv.height = dd.h;
     const outCv = document.createElement("canvas"); outCv.width = vd.w; outCv.height = vd.h;   // what the recorder + preview show
@@ -2801,8 +2816,8 @@ async function generateVideo() {
             // at ~0.0005 (v1.67 diagnosis), without the v1.67 runaway
             // that pinned the frame to the clip bounds by mid-video.
             const rp = rampOnRun ? videoRampP(i, total) : 1;
-            const steps = engineSwitched ? 1 : Math.max(1, Math.round(rampStepsMax * rp));
-            const lr = Math.max(0.01, rampLrMax * rp);
+            const steps = engineSwitched ? 1 : Math.max(1, Math.round(rampStepsEnd * rp));
+            const lr = Math.max(0.01, rampLrEnd * rp);
             rampSteps = steps; rampLr = lr;
             if (rampOnRun) driveRampSliders(steps, lr);
             const weaveEff = rampOnRun ? 0.5 + 0.2 * rp : FRAME_WEAVE;
@@ -2985,7 +3000,7 @@ async function generateVideo() {
         const badNote = badSamples ? " · " + badSamples + " bad samples skipped" : "";
         const recErrNote = recError ? " · recorder error: " + (recError.message || recError.error || recError) : "";
         const veErrNote = veError ? " · video encoder error: " + (veError.message || veError.error || veError) : "";
-        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · dream " + dd.w + "×" + dd.h + " · depth " + (parseFloat($("videoDepth").value) || 0).toFixed(2) + (videoRampOn() ? " · ramp on" : "") + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + recErrNote + veErrNote + recKindNote + outNote + ". Watch it above, or save it.");
+        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · dream " + dd.w + "×" + dd.h + " · depth " + (parseFloat($("videoDepth").value) || 0).toFixed(2) + (videoRampOn() ? " · ramp on" + (rampEndRaised ? " · ramp end " + rampStepsEnd + " steps / " + rampLrEnd.toFixed(3) + " (max was at minimum, raised so the sliders can climb)" : "") : "") + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + recErrNote + veErrNote + recKindNote + outNote + ". Watch it above, or save it.");
       } else if (stopReason) {
         // A failure stopped the run — the reason MUST be shown. Never
         // overwrite it with the bare "Stopped" line (v1.60 hid the
