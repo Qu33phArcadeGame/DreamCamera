@@ -2345,19 +2345,23 @@ async function generateVideo() {
   let rampOnRun = false, rampStepsMax = 4, rampLrMax = 0.06, rampNoise = null;
   // v1.67: drive the Steps / Dream strength sliders so the ramp is visible
   // while it runs (Coby: "make it so i can see the sliders go up").
+  // v1.68: snap lr to the slider's 0.005 step grid before setting .value
+  // (a raw float can be rejected/ignored by the range input), dispatch
+  // an input event so the browser treats it as a real change and repaints
+  // the thumb, and force a reflow. The label is also set directly.
   function driveRampSliders(steps, lr) {
     try {
       const sEl = $("videoSteps"), lEl = $("videoLr");
-      if (sEl) { sEl.value = String(steps); const v = $("videoStepsVal"); if (v) v.textContent = String(steps); }
-      if (lEl) { lEl.value = String(lr); const v = $("videoLrVal"); if (v) v.textContent = (+lr).toFixed(3); }
+      if (sEl) { sEl.value = String(steps); const v = $("videoStepsVal"); if (v) v.textContent = String(steps); try { sEl.dispatchEvent(new Event("input", { bubbles: true })); void sEl.offsetWidth; } catch (e) {} }
+      if (lEl) { const lrSnap = Math.round(lr / 0.005) * 0.005; lEl.value = String(lrSnap); const v = $("videoLrVal"); if (v) v.textContent = lrSnap.toFixed(3); try { lEl.dispatchEvent(new Event("input", { bubbles: true })); void lEl.offsetWidth; } catch (e) {} }
     } catch (e) {}
   }
   function restoreRampSliders() {
     if (!rampOnRun) return;
     try {
       const sEl = $("videoSteps"), lEl = $("videoLr");
-      if (sEl) { sEl.value = String(rampStepsMax); const v = $("videoStepsVal"); if (v) v.textContent = String(rampStepsMax); }
-      if (lEl) { lEl.value = String(rampLrMax); const v = $("videoLrVal"); if (v) v.textContent = (+rampLrMax).toFixed(3); }
+      if (sEl) { sEl.value = String(rampStepsMax); const v = $("videoStepsVal"); if (v) v.textContent = String(rampStepsMax); try { sEl.dispatchEvent(new Event("input", { bubbles: true })); } catch (e) {} }
+      if (lEl) { const lrSnap = Math.round(rampLrMax / 0.005) * 0.005; lEl.value = String(lrSnap); const v = $("videoLrVal"); if (v) v.textContent = lrSnap.toFixed(3); try { lEl.dispatchEvent(new Event("input", { bubbles: true })); } catch (e) {} }
     } catch (e) {}
   }
   try {
@@ -2788,18 +2792,22 @@ async function generateVideo() {
             // Floor: never 0 steps / 0 lr — 1 step and the slider minimum
             // lr, so the weave seeds from frame 0 (v1.66 left 12 frames
             // at 0 steps on a 92-frame video and the weave had nothing
-            // to amplify). Weave ramps 0.5 -> 0.9, boost 1x -> 8x, the
-            // noise seed 0 -> 5, and the depth washout eases to 30% —
-            // together they make flat content actually dream instead of
-            // saturating at ~0.0005 (v1.67 diagnosis).
+            // to amplify). v1.68: weave ramps 0.5 -> 0.7 (was 0.9),
+            // boost 1x -> 2x (was 8x), and the noise seed is scaled to
+            // the model's range, 0.02 x (P.hi - P.lo) (was a fixed ±5
+            // for every model — 250% of v3's [-1,1] range, instant
+            // static). The depth washout eases to 30% — together they
+            // make flat content actually dream instead of saturating
+            // at ~0.0005 (v1.67 diagnosis), without the v1.67 runaway
+            // that pinned the frame to the clip bounds by mid-video.
             const rp = rampOnRun ? videoRampP(i, total) : 1;
             const steps = engineSwitched ? 1 : Math.max(1, Math.round(rampStepsMax * rp));
             const lr = Math.max(0.01, rampLrMax * rp);
             rampSteps = steps; rampLr = lr;
             if (rampOnRun) driveRampSliders(steps, lr);
-            const weaveEff = rampOnRun ? 0.5 + 0.4 * rp : FRAME_WEAVE;
-            const boostF = rampOnRun ? 1 + 7 * rp : 1;
-            const noiseAmp = rampOnRun ? 5 * rp : 0;
+            const weaveEff = rampOnRun ? 0.5 + 0.2 * rp : FRAME_WEAVE;
+            const boostF = rampOnRun ? 1 + rp : 1;
+            const noiseAmp = rampOnRun ? 0.02 * (P.hi - P.lo) * rp : 0;
             const depthAmt = parseFloat($("videoDepth").value) || 0;
             const depthEff = rampOnRun ? depthAmt * (1 - 0.7 * rp) : depthAmt;
             const pulseF = 1 + (parseFloat($("videoPulse").value) || 0) * Math.sin(i * 0.25);   // Pulse: the dream strength breathes, one full breath every ~25 frames
@@ -2829,25 +2837,34 @@ async function generateVideo() {
             // and objects get the full dream, flat sky gets a gentler
             // one, so objects stand out instead of everything getting
             // the same wash. Depth 0 turns it off (old behaviour).
-            // rawKeep is also the base for the v1.67 boost, so it is kept
-            // whenever the boost is on even if depth is 0; it stays clean
-            // (taken before the noise seed) so the blend never
-            // reintroduces raw noise grain.
-            let rawKeep = null, dmask = null;
-            if (depthEff > 0 || boostF > 1) rawKeep = cur.clone();
-            if (depthEff > 0) dmask = videoDetailMask(cur);
-            // v1.67 noise seed (ramp only): one fixed pattern per run,
+            // v1.68 noise seed (ramp only): one fixed pattern per run,
             // added just before the dream so flat areas have texture to
             // amplify. Without it the label's flat white has no gradient
-            // and the dream stays ~0.0005.
+            // and the dream stays ~0.0005. The amp is scaled to the
+            // model's range (0.02 x (P.hi - P.lo)) — v1.67 used a fixed
+            // ±5 for every model, which is 250% of v3's [-1,1] range.
             if (noiseAmp > 0 && rampNoise) {
               const n = tf.tidy(() => cur.add(rampNoise.mul(noiseAmp)));
               cur.dispose(); cur = n;
             }
+            // rawKeep is the base for the boost and the depth blend, so
+            // it is kept whenever the boost is on even if depth is 0.
+            // v1.68: it is taken AFTER the noise seed is added, so the
+            // boost amplifies only the dream's change on top of the
+            // noise, never the injected noise itself. v1.67 took it
+            // before the noise, so boostF up to 8x amplified the noise
+            // and the weave carried it forward — a runaway that pinned
+            // the frame to the clip bounds (pure static) by mid-video.
+            let rawKeep = null, dmask = null;
+            if (depthEff > 0 || boostF > 1) rawKeep = cur.clone();
+            if (depthEff > 0) dmask = videoDetailMask(cur);
             cur = dreamSteps(cur, lr * pulseF, steps, true);
-            // v1.67 boost (ramp only): amplify the dream delta so the end
-            // is crazy. The delta is measured from the clean pre-dream
-            // tensor, so the boost grows the dream, not the noise.
+            // v1.68 boost (ramp only): amplify the dream delta so the end
+            // is crazy. The delta is measured from the noisy pre-dream
+            // tensor (rawKeep, taken after the noise seed), so the boost
+            // grows the dream, not the noise. Capped at 2x (was 8x) —
+            // the v1.56 weave carryover is already the mechanism that
+            // makes video dreams visible.
             if (boostF > 1 && rawKeep) {
               const b = tf.tidy(() => rawKeep.add(cur.sub(rawKeep).mul(boostF)).clipByValue(P.lo, P.hi));
               cur.dispose(); cur = b;
