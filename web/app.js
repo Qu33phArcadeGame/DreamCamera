@@ -523,17 +523,22 @@ function tileAxis(W, ts, ov) {
   for (let i = 0; i <= m; i++) pos.push(Math.round(i * Q / m));
   return pos;
 }
-async function dreamTiled(cv, lr, steps, onTile, scratch) {
+async function dreamTiled(cv, lr, steps, onTile, scratch, tsOpt, ovOpt) {
   // cv: a 2D canvas at the target resolution. Dreamed in place, tile by
   // tile. onTile(done, total) reports progress. scratch (optional) holds
   // the accumulation canvases so a video can reuse them across frames
-  // instead of allocating a 4K canvas per frame.
+  // instead of allocating a 4K canvas per frame. tsOpt/ovOpt (optional)
+  // override the tile size/overlap — the video path passes 768/192; a
+  // still passes nothing and uses the model's own size (512 free-size).
+  // Returns the tile grid {nx, ny} (1x1 when dreamed whole).
   const W = cv.width, H = cv.height;
-  if (W <= 0 || H <= 0) return;
+  if (W <= 0 || H <= 0) return null;
   // The tile size follows the model: a fixed-size model (zentangledream,
   // MobileNet, ResNet, DenseNet, InceptionResNetV2) tiles at its native
-  // size so nothing is downscaled and back; free-size models use 512.
-  const ts = tileSizeForModel(), ov = tileOverlapForModel(ts);
+  // size so nothing is downscaled and back; free-size models use 512 —
+  // unless the caller passes a size (video: 768, the largest size
+  // proven on the phone).
+  const ts = tsOpt || tileSizeForModel(), ov = ovOpt || tileOverlapForModel(ts);
   // A small image is just dreamed whole — no tiling needed.
   if (W <= ts && H <= ts) {
     let t = canvasToTensor(cv);
@@ -541,7 +546,7 @@ async function dreamTiled(cv, lr, steps, onTile, scratch) {
     await tensorToCanvas(t, cv);
     t.dispose();
     if (onTile) onTile(1, 1);
-    return;
+    return { nx: 1, ny: 1 };
   }
   const scratchPassed = scratch != null;   // a video passes its own scratch in and reuses it across frames; a still makes its own and frees it after
   scratch = scratch || {};
@@ -607,6 +612,7 @@ async function dreamTiled(cv, lr, steps, onTile, scratch) {
   // the PNG encode that follows does not have to share memory with it.
   // (A video passes its own scratch in and reuses it, so leave that one.)
   if (!scratchPassed) { scratch.resCv.width = 0; scratch.resCv.height = 0; scratch.tileCv.width = 0; scratch.tileCv.height = 0; scratch.tmpCv.width = 0; scratch.tmpCv.height = 0; }
+  return { nx: xs.length, ny: ys.length };
 }
 function zoomCrop(img, zf, ox, oy, sharpen) {
   return tf.tidy(() => {
@@ -1776,8 +1782,18 @@ function videoDims(vw, vh, shortOverride) {
 const VIDEO_DREAM_MAX = 384;   // the fast option / floor — the setting picks the actual cap
 function videoDreamDetail() {
   const v = parseInt(($("videoDreamDetail") && $("videoDreamDetail").value) || "512", 10);
-  return [384, 512, 768, 1080, 1440].includes(v) ? v : 512;
+  return [384, 512, 768, 1080, 1440, 2160].includes(v) ? v : 512;   // v1.73: 2160 added (for a 4K source; dreamed tiled, see VIDEO_TILE_SIZE)
 }
+// v1.73: tiled video dream. A free-size model at a dream short side
+// above one tile (768, the largest size proven on the phone) cannot run
+// as a single pass — the WASM heap could not even hold the backward
+// pass at 1080x2340, and a 2160x3840 pass would very likely lose the
+// WebGPU device. So the video dreams in 768 tiles with 192 overlap
+// (the Photos feather-blend, dreamTiled). The weave, zoom, noise and
+// depth mask all run at full-frame level, so only the dream step itself
+// is tiled; fixed-size models never tile (dreamSteps letterboxes them
+// to their native size).
+const VIDEO_TILE_SIZE = 768, VIDEO_TILE_OVERLAP = 192;
 // v1.65: depth/detail separation. A per-pixel mask of how much local
 // detail a frame has — |frame - blurred frame|, smoothed and normalized
 // to [0,1] per frame, then DILATED so whole objects are covered, not
@@ -2360,6 +2376,8 @@ async function generateVideo() {
   // where the ramp starts, right? thats how I want it." The v1.66–v1.69
   // reading had the sliders as the END; they are the START now.)
   let rampOnRun = false, rampStepsStart = 4, rampLrStart = 0.06, rampStepsTop = 5, rampLrTop = 0.10, rampNoise = null;
+  let tileScratch = {};   // v1.73: reused across frames by the tiled dream path (declared here so the finally can free it)
+  let tileNote = "";      // v1.73: " · tiled NxM" when the run tiled — named in the Done status
   // v1.67: drive the Steps / Dream strength sliders so the ramp is visible
   // while it runs (Coby: "make it so i can see the sliders go up").
   // v1.68: snap lr to the slider's 0.005 step grid before setting .value
@@ -2886,7 +2904,24 @@ async function generateVideo() {
             let rawKeep = null, dmask = null;
             if (depthEff > 0 || boostF > 1) rawKeep = cur.clone();
             if (depthEff > 0) dmask = videoDetailMask(cur);
-            cur = dreamSteps(cur, lr * pulseF, steps, true);
+            // v1.73: tiled dream for a free-size model when the dream
+            // short side is above one tile (768). The pre-dream tensor
+            // (weave + zoom + noise already applied) goes onto dreamCv,
+            // dreamTiled dreams it tile by tile in place, and it comes
+            // back as a tensor for the boost/depth blend. Fixed-size
+            // models and small dreams take the single pass, as before.
+            // (One extra 8-bit round-trip per frame: the canvas holds
+            // uint8, so the dream delta is quantized to 1/255 steps —
+            // the Photos stills already accept this and dream visibly.)
+            if (!MODEL.fixedSize && Math.min(dd.w, dd.h) > VIDEO_TILE_SIZE) {
+              await tensorToCanvas(cur, dreamCv);
+              cur.dispose();
+              const grid = await dreamTiled(dreamCv, lr * pulseF, steps, null, tileScratch, VIDEO_TILE_SIZE, VIDEO_TILE_OVERLAP);
+              if (grid) tileNote = " · tiled " + grid.nx + "×" + grid.ny;
+              cur = canvasToTensor(dreamCv);
+            } else {
+              cur = dreamSteps(cur, lr * pulseF, steps, true);
+            }
             // v1.68 boost (ramp only): amplify the dream delta so the end
             // is crazy. The delta is measured from the noisy pre-dream
             // tensor (rawKeep, taken after the noise seed), so the boost
@@ -3013,7 +3048,7 @@ async function generateVideo() {
         const badNote = badSamples ? " · " + badSamples + " bad samples skipped" : "";
         const recErrNote = recError ? " · recorder error: " + (recError.message || recError.error || recError) : "";
         const veErrNote = veError ? " · video encoder error: " + (veError.message || veError.error || veError) : "";
-        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · dream " + dd.w + "×" + dd.h + " · depth " + (parseFloat($("videoDepth").value) || 0).toFixed(2) + (videoRampOn() ? " · ramp " + rampStepsStart + " → " + rampStepsTop + " steps, " + rampLrStart.toFixed(3) + " → " + rampLrTop.toFixed(3) : "") + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + recErrNote + veErrNote + recKindNote + outNote + ". Watch it above, or save it.");
+        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · dream " + dd.w + "×" + dd.h + tileNote + " · depth " + (parseFloat($("videoDepth").value) || 0).toFixed(2) + (videoRampOn() ? " · ramp " + rampStepsStart + " → " + rampStepsTop + " steps, " + rampLrStart.toFixed(3) + " → " + rampLrTop.toFixed(3) : "") + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + recErrNote + veErrNote + recKindNote + outNote + ". Watch it above, or save it.");
       } else if (stopReason) {
         // A failure stopped the run — the reason MUST be shown. Never
         // overwrite it with the bare "Stopped" line (v1.60 hid the
@@ -3042,6 +3077,7 @@ async function generateVideo() {
     veEncoder = null;
   } finally {
     if (prev) { try { prev.dispose(); } catch (e) {} prev = null; }
+    if (tileScratch.resCv) { try { tileScratch.resCv.width = 0; tileScratch.tileCv.width = 0; tileScratch.tmpCv.width = 0; } catch (e) {} }   // v1.73: free the tiled-dream scratch canvases
     if (rampNoise) { try { rampNoise.dispose(); } catch (e) {} rampNoise = null; }   // v1.67: free the per-run noise seed
     restoreRampSliders();   // v1.67: the sliders go back to the user's set start values
     if (held) { try { held.close(); } catch (e) {} held = null; }
