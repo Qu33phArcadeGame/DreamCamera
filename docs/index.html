@@ -99,7 +99,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.74</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.75</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">Photos</button>
@@ -283,8 +283,6 @@
           <input type="range" id="videoLr" min="0.01" max="0.10" step="0.005" value="0.06"></label>
         <label class="full"><b>Ramp up <input type="checkbox" id="videoRamp" style="accent-color:#ff2fd6;width:18px;height:18px;vertical-align:-3px"></b>
           <span class="val">Starts at the set steps + strength, climbs to the max by the last frame.</span></label>
-        <label class="full"><b>CPU engine <input type="checkbox" id="videoCpu" style="accent-color:#ff2fd6;width:18px;height:18px;vertical-align:-3px"></b>
-          <span class="val">Dream on the CPU engine instead of the GPU — slower, but a different look.</span></label>
         <label><b>Depth separation <span class="val" id="videoDepthVal">0.70</span></b>
           <input type="range" id="videoDepth" min="0" max="1" step="0.05" value="0.7">
           <span class="val">Edges and objects dream harder, flat sky dreams gentler — objects stand out. 0 turns it off.</span></label>
