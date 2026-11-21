@@ -274,8 +274,8 @@
           <select id="videoSize"><option value="256">256 · fast</option><option value="384">384</option><option value="512">512</option><option value="768">768</option><option value="1024">1024</option><option value="2160" selected>2160 · 4K</option></select>
           <span class="val">The finished video's size. 4K is an upscale of the dream — sharper file, same dream detail.</span></label>
         <label><b>Dream detail</b>
-          <select id="videoDreamDetail"><option value="384">384 · fast</option><option value="512" selected>512</option><option value="768">768</option><option value="1080">1080</option><option value="1440">1440 · max detail</option></select>
-          <span class="val">How big each frame is dreamed. Bigger = sharper dream, slower run (1080 is ~2× 768; 1440 is ~1.8× 1080).</span></label>
+          <select id="videoDreamDetail"><option value="384">384 · fast</option><option value="512" selected>512</option><option value="768">768</option><option value="1080">1080</option><option value="1440">1440</option><option value="2160">2160 · max detail</option></select>
+          <span class="val">How big each frame is dreamed. Bigger = sharper dream, slower run (1080+ is tiled, true 4K detail).</span></label>
         <div class="scroll-gap" aria-hidden="true">⋮</div>
         <label><b>Steps / frame <span class="val" id="videoStepsVal">4</span></b>
           <input type="range" id="videoSteps" min="1" max="5" step="1" value="4"></label>
