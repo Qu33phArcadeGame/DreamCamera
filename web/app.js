@@ -1873,15 +1873,6 @@ function videoLr() { return parseFloat($("videoLr").value) || 0.04; }
 // frame, evenly spaced. Persisted like the video model.
 const VIDEO_RAMP_KEY = "dreamcamera_video_ramp";
 function videoRampOn() { const el = $("videoRamp"); return !!(el && el.checked); }
-// v1.74: CPU engine toggle — when on, the video run loads the model on
-// the CPU backend instead of the fastest engine (WebGPU first). The
-// Photos tab already has an engine cycle button; this fills the Videos
-// tab gap. Persisted like the Ramp toggle.
-const VIDEO_CPU_KEY = "dreamcamera_video_cpu";
-function videoCpuOn() { const el = $("videoCpu"); return !!(el && el.checked); }
-// Note shown when the CPU engine could not be used and the run fell back
-// to the fastest engine (set in activateVideoModel, read in the Done status).
-let cpuEngineNote = "";
 // Ramp progress for frame i of total — 0 at frame 0, 1 at the last
 // frame; a 1-frame video dreams at the max.
 function videoRampP(i, total) { return total > 1 ? i / (total - 1) : 1; }
@@ -1896,7 +1887,6 @@ function updateVideoUI() {
 let savedPhotoLayers = null;
 async function activateVideoModel() {
   const key = videoModelKey();
-  cpuEngineNote = "";   // reset every run, so a stale fallback note from an earlier run never shows on a run that never asked for CPU
   // The video run uses the fastest working engine (WebGPU first), not
   // whatever engine the Photos tab happens to be on — a Photos session
   // left on WASM/CPU would otherwise make the whole video run at that
@@ -1906,10 +1896,7 @@ async function activateVideoModel() {
   const best = engineOrder[0];
   const curB = (typeof tf !== "undefined" && tf.getBackend) ? tf.getBackend() : null;
   const modelChanged = MODEL.short !== key;
-  // v1.74: CPU toggle — the target engine is 'cpu' when on, fastest otherwise.
-  const wantCpu = videoCpuOn();
-  const target = wantCpu ? "cpu" : best;
-  const engineChanged = !!(target && curB && curB !== target);
+  const engineChanged = !!(best && curB && curB !== best);
   if (modelChanged || engineChanged) {
     if (savedPhotoLayers == null) savedPhotoLayers = (settings.layers || []).slice();
     if (modelChanged) {
@@ -1917,18 +1904,6 @@ async function activateVideoModel() {
       settings.layers = MODEL.pref.slice();
     }
     ready = false; model = null; midModel = null; grads = {};
-  }
-  if (wantCpu) {
-    // ensureReady() always starts at engineOrder[0] (WebGPU) — it cannot
-    // pick CPU on its own, so activate CPU directly. The shared
-    // engineOrder is left untouched so the Photos tab keeps its order.
-    if (ready && model && curB === "cpu") return true;
-    try { await activate("cpu"); ready = true; return true; }
-    catch (e) {
-      console.warn("video CPU engine failed", e);
-      cpuEngineNote = " · CPU engine unavailable — using " + (best ? LABEL[best] : "fastest engine");
-      // fall through to the fastest engine below
-    }
   }
   return await ensureReady();
 }
@@ -3073,7 +3048,7 @@ async function generateVideo() {
         const badNote = badSamples ? " · " + badSamples + " bad samples skipped" : "";
         const recErrNote = recError ? " · recorder error: " + (recError.message || recError.error || recError) : "";
         const veErrNote = veError ? " · video encoder error: " + (veError.message || veError.error || veError) : "";
-        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · dream " + dd.w + "×" + dd.h + tileNote + " · depth " + (parseFloat($("videoDepth").value) || 0).toFixed(2) + (videoRampOn() ? " · ramp " + rampStepsStart + " → " + rampStepsTop + " steps, " + rampLrStart.toFixed(3) + " → " + rampLrTop.toFixed(3) : "") + " · " + vModel.label + " · " + fmt + engLabel() + cpuEngineNote + swNote + recNote + badNote + recErrNote + veErrNote + recKindNote + outNote + ". Watch it above, or save it.");
+        setVideoStatus("Done — " + dreamed + " of " + total + " frames dreamed" + (skipped ? " · " + skipped + " skipped" : "") + " · " + decodedFrames + " frames decoded" + (reusedFrames ? " · " + reusedFrames + " reused" : "") + " · " + vd.w + "×" + vd.h + " · dream " + dd.w + "×" + dd.h + tileNote + " · depth " + (parseFloat($("videoDepth").value) || 0).toFixed(2) + (videoRampOn() ? " · ramp " + rampStepsStart + " → " + rampStepsTop + " steps, " + rampLrStart.toFixed(3) + " → " + rampLrTop.toFixed(3) : "") + " · " + vModel.label + " · " + fmt + swNote + recNote + badNote + recErrNote + veErrNote + recKindNote + outNote + ". Watch it above, or save it.");
       } else if (stopReason) {
         // A failure stopped the run — the reason MUST be shown. Never
         // overwrite it with the bare "Stopped" line (v1.60 hid the
@@ -3126,8 +3101,6 @@ function initVideoTab() {
   buildVideoModelSelect();
   try { $("videoRamp").checked = localStorage.getItem(VIDEO_RAMP_KEY) === "1"; } catch (e) {}
   $("videoRamp").addEventListener("change", () => { try { localStorage.setItem(VIDEO_RAMP_KEY, $("videoRamp").checked ? "1" : "0"); } catch (e) {} });
-  try { $("videoCpu").checked = localStorage.getItem(VIDEO_CPU_KEY) === "1"; } catch (e) {}
-  $("videoCpu").addEventListener("change", () => { try { localStorage.setItem(VIDEO_CPU_KEY, $("videoCpu").checked ? "1" : "0"); } catch (e) {} });
   $("videoSteps").addEventListener("input", () => { $("videoStepsVal").textContent = $("videoSteps").value; });
   $("videoLr").addEventListener("input", () => { $("videoLrVal").textContent = (+$("videoLr").value).toFixed(3); });
   $("videoDepth").addEventListener("input", () => { $("videoDepthVal").textContent = (+$("videoDepth").value).toFixed(2); });
