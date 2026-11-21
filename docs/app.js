@@ -1755,15 +1755,21 @@ function videoDims(vw, vh, shortOverride) {
 // The video DREAM runs smaller than the video itself: one gradient step
 // through a free-size model (v1, the default) at 512×1109 is a huge GPU
 // allocation in the Android WebView and loses the device ("[Device] is
-// lost"). v1.65: the dream size is a setting now (Dream detail) — 192 is
-// fast, 256 is the default (sharper, ~1.8x the time of 192 — measured
-// against the real Inception v1 model), 384 is max detail (~4x the time
-// of 192). The output video keeps the size from Output size — the
-// dreamed frame is upscaled onto it.
-const VIDEO_DREAM_MAX = 192;   // the fast option / floor — the setting picks the actual cap
+// lost") — that is what forced the 256 cap in v1.54. v1.71: the Dream
+// detail setting doubled at Coby's request — 384 is fast, 512 is the
+// default, 768 is max detail. Measured against the real Inception v1
+// model (WASM, lr 0.06, steps 4): 384 = 48s/frame, 512 = 87s/frame
+// (1.8x 384), 768 = 195s/frame (2.3x 512); 768 IS sharper than 512
+// (1.36x high-frequency energy at a common 1664x768). A 749-frame video
+// is ~18h at 512 / ~41h at 768 on WASM; on the phone's WebGPU roughly
+// 4-7h at 512 and 10-16h at 768 (scaled from the v1.65 phone figures).
+// If the GPU loses the device at 512/768 the backend falls back to
+// WASM/CPU and the run still fails honestly. The output video keeps the
+// size from Output size — the dreamed frame is upscaled onto it.
+const VIDEO_DREAM_MAX = 384;   // the fast option / floor — the setting picks the actual cap
 function videoDreamDetail() {
-  const v = parseInt(($("videoDreamDetail") && $("videoDreamDetail").value) || "256", 10);
-  return [192, 256, 384].includes(v) ? v : 256;
+  const v = parseInt(($("videoDreamDetail") && $("videoDreamDetail").value) || "512", 10);
+  return [384, 512, 768].includes(v) ? v : 512;
 }
 // v1.65: depth/detail separation. A per-pixel mask of how much local
 // detail a frame has — |frame - blurred frame|, smoothed and normalized
@@ -1773,9 +1779,9 @@ function videoDreamDetail() {
 // as the sky), so without dilation only the outlines would dream hard
 // and the object interiors would be damped like the sky. The dilation
 // runs at quarter resolution (downsample, max-pool, upsample) so it is
-// cheap: a 13-wide max-pool at 1/4 scale spreads ~24px at full scale,
-// enough to cover a pipe interior at 256 dream size, and the upsample
-// keeps the mask smooth. Edge-rich objects (bird, pipes, score, text)
+// cheap: a 13-wide max-pool at 1/4 scale spreads ~48px at full scale at
+// the default 512 dream size, enough to cover a pipe interior, and the
+// upsample keeps the mask smooth. Edge-rich objects (bird, pipes, score, text)
 // score near 1; flat background (sky) scores near 0. A true depth model
 // was considered and rejected for video: it would need a new ~20MB model
 // bundled plus a full inference per frame, and on flat 2D game art a
@@ -1802,7 +1808,7 @@ function videoDetailMask(t) {
 // way Photos builds up over a run) so it becomes clearly visible by ~frame 7.
 const FRAME_WEAVE = 0.5;
 function videoDreamDims(vd, max) {
-  const cap = max || videoDreamDetail();   // v1.65: the Dream detail setting (256 default); an explicit max (e.g. the 128 fallback) still wins
+  const cap = max || videoDreamDetail();   // v1.71: the Dream detail setting (512 default); an explicit max (e.g. the 128 fallback) still wins
   const short = Math.min(vd.w, vd.h);
   if (short <= cap) return { w: vd.w, h: vd.h };
   const s = cap / short;
