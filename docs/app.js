@@ -1757,19 +1757,26 @@ function videoDims(vw, vh, shortOverride) {
 // allocation in the Android WebView and loses the device ("[Device] is
 // lost") — that is what forced the 256 cap in v1.54. v1.71: the Dream
 // detail setting doubled at Coby's request — 384 is fast, 512 is the
-// default, 768 is max detail. Measured against the real Inception v1
-// model (WASM, lr 0.06, steps 4): 384 = 48s/frame, 512 = 87s/frame
-// (1.8x 384), 768 = 195s/frame (2.3x 512); 768 IS sharper than 512
-// (1.36x high-frequency energy at a common 1664x768). A 749-frame video
-// is ~18h at 512 / ~41h at 768 on WASM; on the phone's WebGPU roughly
-// 4-7h at 512 and 10-16h at 768 (scaled from the v1.65 phone figures).
-// If the GPU loses the device at 512/768 the backend falls back to
-// WASM/CPU and the run still fails honestly. The output video keeps the
-// size from Output size — the dreamed frame is upscaled onto it.
+// default, 768 is max detail. v1.72: 1080 and 1440 added at his request —
+// at 768 his 1080×2340 source is dreamed at 768×1664 and stretched ~2.8×
+// to the 2160 output, which is the blur he saw; at 1080 the dream runs
+// at the source's own 1080×2340 (2× upscale), at 1440 it runs at
+// 1440×3120 for a wider source (1.5× upscale). Measured against the
+// real Inception v1 model (WASM, lr 0.06, steps 4): 384 = 48s/frame,
+// 512 = 87s/frame (1.8x 384), 768 = 195s/frame (2.3x 512); 768 IS
+// sharper than 512 (1.36x high-frequency energy at a common 1664x768).
+// WASM times are WASM ONLY — never use them to estimate phone time:
+// Coby reported 768 "doesnt take that long at all" on his phone, so the
+// v1.71 phone estimate (10-16h for a 62s video at 768) was far too
+// pessimistic and is withdrawn. 1080/1440 use ~2×/3.5× the pixels of
+// 768, so the device-loss risk is real — if the GPU loses the device
+// the backend falls back to WASM/CPU and the run still fails honestly.
+// The output video keeps the size from Output size — the dreamed frame
+// is upscaled onto it.
 const VIDEO_DREAM_MAX = 384;   // the fast option / floor — the setting picks the actual cap
 function videoDreamDetail() {
   const v = parseInt(($("videoDreamDetail") && $("videoDreamDetail").value) || "512", 10);
-  return [384, 512, 768].includes(v) ? v : 512;
+  return [384, 512, 768, 1080, 1440].includes(v) ? v : 512;
 }
 // v1.65: depth/detail separation. A per-pixel mask of how much local
 // detail a frame has — |frame - blurred frame|, smoothed and normalized
@@ -1808,7 +1815,7 @@ function videoDetailMask(t) {
 // way Photos builds up over a run) so it becomes clearly visible by ~frame 7.
 const FRAME_WEAVE = 0.5;
 function videoDreamDims(vd, max) {
-  const cap = max || videoDreamDetail();   // v1.71: the Dream detail setting (512 default); an explicit max (e.g. the 128 fallback) still wins
+  const cap = max || videoDreamDetail();   // v1.72: the Dream detail setting (512 default, up to 1440); an explicit max (e.g. the 128 fallback) still wins
   const short = Math.min(vd.w, vd.h);
   if (short <= cap) return { w: vd.w, h: vd.h };
   const s = cap / short;
