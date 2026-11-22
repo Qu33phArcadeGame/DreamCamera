@@ -99,7 +99,7 @@
 </style>
 </head>
 <body>
-<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.77</span></header>
+<header><h1><img src="dream-eye-camera.png" alt="DreamCamera logo">DreamCamera</h1><span>deepdream camera · v1.78</span></header>
 <main>
   <div class="tabs">
     <button class="tab on" id="tabCamera">Photos</button>
@@ -277,12 +277,12 @@
           <select id="videoDreamDetail"><option value="384">384 · fast</option><option value="512" selected>512</option><option value="768">768</option><option value="1080">1080</option><option value="1440">1440</option><option value="2160">2160 · max detail</option></select>
           <span class="val">How big each frame is dreamed. Bigger = sharper dream, slower run (1080+ is tiled, true 4K detail).</span></label>
         <div class="scroll-gap" aria-hidden="true">⋮</div>
-        <label><b>Steps / frame <span class="val" id="videoStepsVal">4</span></b>
-          <input type="range" id="videoSteps" min="1" max="5" step="1" value="4"></label>
-        <label><b>Dream strength <span class="val" id="videoLrVal">0.060</span></b>
-          <input type="range" id="videoLr" min="0.01" max="0.10" step="0.005" value="0.06"></label>
+        <label><b>Steps / frame <span class="val" id="videoStepsVal">1</span></b>
+          <input type="range" id="videoSteps" min="1" max="5" step="1" value="1"></label>
+        <label><b>Dream strength <span class="val" id="videoLrVal">0.010</span></b>
+          <input type="range" id="videoLr" min="0.01" max="0.10" step="0.005" value="0.010"></label>
         <label class="full"><b>Ramp up <input type="checkbox" id="videoRamp" style="accent-color:#ff2fd6;width:18px;height:18px;vertical-align:-3px"></b>
-          <span class="val">Starts at the set steps + strength, climbs to the max by the last frame.</span></label>
+          <span class="val">Starts at the set steps + strength (lowest if you don't set anything), climbs to the max by the last frame.</span></label>
         <label><b>Depth separation <span class="val" id="videoDepthVal">0.70</span></b>
           <input type="range" id="videoDepth" min="0" max="1" step="0.05" value="0.7">
           <span class="val">Edges and objects dream harder, flat sky dreams gentler — objects stand out. 0 turns it off.</span></label>
