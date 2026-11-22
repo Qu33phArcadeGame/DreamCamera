@@ -1873,6 +1873,15 @@ function videoLr() { return parseFloat($("videoLr").value) || 0.04; }
 // frame, evenly spaced. Persisted like the video model.
 const VIDEO_RAMP_KEY = "dreamcamera_video_ramp";
 function videoRampOn() { const el = $("videoRamp"); return !!(el && el.checked); }
+// v1.77: whether the user has genuinely dragged the Steps / Dream strength
+// sliders. Only a TRUSTED input event counts (a real drag/tap); the
+// programmatic input events dispatched by driveRampSliders /
+// restoreRampSliders are untrusted and must not count. In-memory only —
+// reset on page load, never persisted. A slider he never touched starts
+// the ramp at the LOWEST, not at the HTML defaults (Coby, Nov 21:
+// "the start should be wherever you set it, lowest if you dont set
+// anything, then go up to max yes").
+let videoStepsSet = false, videoLrSet = false;
 // Ramp progress for frame i of total — 0 at frame 0, 1 at the last
 // frame; a 1-frame video dreams at the max.
 function videoRampP(i, total) { return total > 1 ? i / (total - 1) : 1; }
@@ -2419,9 +2428,13 @@ async function generateVideo() {
     // start is already at max (then the ramp has nowhere to climb and
     // the sliders correctly stay at max). The user's set values are the
     // ones restored after the run (restoreRampSliders).
+    // v1.77: a slider he never touched starts at the LOWEST (Steps min 1,
+    // Strength min 0.010), not the HTML defaults (4 / 0.060) — the flags
+    // videoStepsSet / videoLrSet say whether he genuinely dragged it.
+    // Ramp OFF keeps the slider values as-is (v1.76).
     rampOnRun = videoRampOn();
-    rampStepsStart = parseInt($("videoSteps").value, 10) || 4;
-    rampLrStart = videoLr();
+    rampStepsStart = (rampOnRun && !videoStepsSet) ? (parseInt($("videoSteps").min, 10) || 1) : (parseInt($("videoSteps").value, 10) || 4);
+    rampLrStart = (rampOnRun && !videoLrSet) ? (parseFloat($("videoLr").min) || 0.01) : videoLr();
     rampStepsTop = ($("videoSteps") && parseInt($("videoSteps").max, 10)) || 5;
     rampLrTop = ($("videoLr") && parseFloat($("videoLr").max)) || 0.10;
     if (rampOnRun) { try { if (rampNoise) rampNoise.dispose(); } catch (e) {} rampNoise = tf.randomUniform([1, dd.h, dd.w, 3], -1, 1); }
@@ -3106,8 +3119,8 @@ function initVideoTab() {
   buildVideoModelSelect();
   try { $("videoRamp").checked = localStorage.getItem(VIDEO_RAMP_KEY) === "1"; } catch (e) {}
   $("videoRamp").addEventListener("change", () => { try { localStorage.setItem(VIDEO_RAMP_KEY, $("videoRamp").checked ? "1" : "0"); } catch (e) {} });
-  $("videoSteps").addEventListener("input", () => { $("videoStepsVal").textContent = $("videoSteps").value; });
-  $("videoLr").addEventListener("input", () => { $("videoLrVal").textContent = (+$("videoLr").value).toFixed(3); });
+  $("videoSteps").addEventListener("input", (e) => { if (e && e.isTrusted) videoStepsSet = true; $("videoStepsVal").textContent = $("videoSteps").value; });
+  $("videoLr").addEventListener("input", (e) => { if (e && e.isTrusted) videoLrSet = true; $("videoLrVal").textContent = (+$("videoLr").value).toFixed(3); });
   $("videoDepth").addEventListener("input", () => { $("videoDepthVal").textContent = (+$("videoDepth").value).toFixed(2); });
   $("videoZoomCycles").addEventListener("input", () => { $("videoZoomCyclesVal").textContent = $("videoZoomCycles").value; });
   $("videoZoomAmount").addEventListener("input", () => { $("videoZoomAmountVal").textContent = (+$("videoZoomAmount").value).toFixed(2) + "×"; });
