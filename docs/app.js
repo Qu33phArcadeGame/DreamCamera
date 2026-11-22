@@ -528,7 +528,7 @@ async function dreamTiled(cv, lr, steps, onTile, scratch, tsOpt, ovOpt) {
   // tile. onTile(done, total) reports progress. scratch (optional) holds
   // the accumulation canvases so a video can reuse them across frames
   // instead of allocating a 4K canvas per frame. tsOpt/ovOpt (optional)
-  // override the tile size/overlap — the video path passes 768/192; a
+  // override the tile size/overlap — the video path passes 512/128; a
   // still passes nothing and uses the model's own size (512 free-size).
   // Returns the tile grid {nx, ny} (1x1 when dreamed whole).
   const W = cv.width, H = cv.height;
@@ -536,8 +536,8 @@ async function dreamTiled(cv, lr, steps, onTile, scratch, tsOpt, ovOpt) {
   // The tile size follows the model: a fixed-size model (zentangledream,
   // MobileNet, ResNet, DenseNet, InceptionResNetV2) tiles at its native
   // size so nothing is downscaled and back; free-size models use 512 —
-  // unless the caller passes a size (video: 768, the largest size
-  // proven on the phone).
+  // unless the caller passes a size (video: 512 since v1.80 — 768 tiles
+  // still killed the GPU on the deep models at 1080).
   const ts = tsOpt || tileSizeForModel(), ov = ovOpt || tileOverlapForModel(ts);
   // A small image is just dreamed whole — no tiling needed.
   if (W <= ts && H <= ts) {
@@ -1785,15 +1785,20 @@ function videoDreamDetail() {
   return [384, 512, 768, 1080, 1440, 2160].includes(v) ? v : 512;   // v1.73: 2160 added (for a 4K source; dreamed tiled, see VIDEO_TILE_SIZE)
 }
 // v1.73: tiled video dream. A free-size model at a dream short side
-// above one tile (768, the largest size proven on the phone) cannot run
-// as a single pass — the WASM heap could not even hold the backward
-// pass at 1080x2340, and a 2160x3840 pass would very likely lose the
-// WebGPU device. So the video dreams in 768 tiles with 192 overlap
+// above one tile cannot run as a single pass — the WASM heap could not
+// even hold the backward pass at 1080x2340, and a 2160x3840 pass would
+// very likely lose the WebGPU device. So the video dreams tile by tile
 // (the Photos feather-blend, dreamTiled). The weave, zoom, noise and
 // depth mask all run at full-frame level, so only the dream step itself
 // is tiled; fixed-size models never tile (dreamSteps letterboxes them
 // to their native size).
-const VIDEO_TILE_SIZE = 768, VIDEO_TILE_OVERLAP = 192;
+// v1.80: tiles shrunk 768/192 → 512/128 (same 1/4 overlap ratio as the
+// Photos 512/128). A 768 tile still killed the GPU on the deep free-size
+// models at 1080, falling back to the slow CPU; 512 tiles use less GPU
+// memory each, so the run stays on GPU. More tiles per frame (1080:
+// 3x6=18, was 2x4=8), same total pixel-work — the win is avoiding the
+// CPU fallback, not less compute.
+const VIDEO_TILE_SIZE = 512, VIDEO_TILE_OVERLAP = 128;
 // v1.65: depth/detail separation. A per-pixel mask of how much local
 // detail a frame has — |frame - blurred frame|, smoothed and normalized
 // to [0,1] per frame, then DILATED so whole objects are covered, not
@@ -2934,7 +2939,7 @@ async function generateVideo() {
             if (depthEff > 0 || boostF > 1) rawKeep = cur.clone();
             if (depthEff > 0) dmask = videoDetailMask(cur);
             // v1.73: tiled dream for a free-size model when the dream
-            // short side is above one tile (768). The pre-dream tensor
+            // short side is above one tile (512). The pre-dream tensor
             // (weave + zoom + noise already applied) goes onto dreamCv,
             // dreamTiled dreams it tile by tile in place, and it comes
             // back as a tensor for the boost/depth blend. Fixed-size
