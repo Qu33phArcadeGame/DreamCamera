@@ -2846,7 +2846,12 @@ async function generateVideo() {
             // make flat content actually dream instead of saturating
             // at ~0.0005 (v1.67 diagnosis), without the v1.67 runaway
             // that pinned the frame to the clip bounds by mid-video.
-            const rp = rampOnRun ? videoRampP(i, total) : 1;
+            // v1.76: rp falls back to 0 when ramp is off, so steps/lr stay
+            // at the captured start values (the sliders) on every frame.
+            // (v1.70 flipped the sliders to START but left the fallback
+            // at 1, which made ramp-off runs use the slider MAXIMUMS
+            // 5 / 0.100 on every frame instead of the set values.)
+            const rp = rampOnRun ? videoRampP(i, total) : 0;
             const steps = engineSwitched ? 1 : Math.max(1, Math.round(rampStepsStart + (rampStepsTop - rampStepsStart) * rp));
             const lr = Math.max(0.01, rampLrStart + (rampLrTop - rampLrStart) * rp);
             rampSteps = steps; rampLr = lr;
