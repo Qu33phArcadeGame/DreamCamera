@@ -2865,7 +2865,18 @@ async function generateVideo() {
             // at 1, which made ramp-off runs use the slider MAXIMUMS
             // 5 / 0.100 on every frame instead of the set values.)
             const rp = rampOnRun ? videoRampP(i, total) : 0;
-            const steps = engineSwitched ? 1 : Math.max(1, Math.round(rampStepsStart + (rampStepsTop - rampStepsStart) * rp));
+            // v1.79: the fallback engine no longer caps steps at 1. The old
+            // `engineSwitched ? 1 :` pinned steps to 1 for the whole run
+            // whenever the GPU died and the run fell back to WASM/CPU —
+            // Coby's screenshot (Nov 22, v1.78) showed exactly that:
+            // engine JavaScript (CPU), ramp 1%, 1 steps, while lr ramped
+            // correctly from 0.030 (lr was never capped). Steps now follow
+            // the ramp formula on every engine, like lr already did. The
+            // fallback still shrinks the dream to 128 (that is what keeps
+            // the CPU run feasible); only the steps cap is gone. A CPU run
+            // with ramped steps is slower than the old 1-step cap, but the
+            // steps are correct — that is what he asked for.
+            const steps = Math.max(1, Math.round(rampStepsStart + (rampStepsTop - rampStepsStart) * rp));
             const lr = Math.max(0.01, rampLrStart + (rampLrTop - rampLrStart) * rp);
             rampSteps = steps; rampLr = lr;
             if (rampOnRun) driveRampSliders(steps, lr);
