@@ -3132,6 +3132,13 @@ function initVideoTab() {
     if (window.DreamCameraBridge && window.DreamCameraBridge.openLive) window.DreamCameraBridge.openLive();
     else setStatus("Live is in the DreamCamera app");
   };
+  // Screen Capture tab: a launcher, not a web panel — same as Live.
+  // It opens the native screen-capture panel and must not change the
+  // Camera/Video tab state. On the public website there is no bridge.
+  $("tabScreen").onclick = () => {
+    if (window.DreamCameraBridge && window.DreamCameraBridge.openScreenCapture) window.DreamCameraBridge.openScreenCapture();
+    else setStatus("Screen Capture is in the DreamCamera app");
+  };
   buildVideoModelSelect();
   try { $("videoRamp").checked = localStorage.getItem(VIDEO_RAMP_KEY) === "1"; } catch (e) {}
   $("videoRamp").addEventListener("change", () => { try { localStorage.setItem(VIDEO_RAMP_KEY, $("videoRamp").checked ? "1" : "0"); } catch (e) {} });
